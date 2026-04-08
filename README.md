@@ -23,12 +23,14 @@ pip3 install -r requirements.txt
 ├── app.py               # Streamlit dashboard
 ├── requirements.txt
 ├── data/
-│   └── 13f.db           # SQLite database (created on first run)
+│   ├── 13f.db           # SQLite database (created on first run)
+│   └── http_cache/      # Disk cache for EDGAR HTTP responses
 └── pipeline/
     ├── database.py      # Schema + DB helpers
     ├── edgar.py         # SEC EDGAR API client + seed filer list
-    ├── parser.py        # 13F XML information table parser
+    ├── parser.py        # 13F filing parser (XML + legacy text formats)
     ├── ingest.py        # CLI ingestion script
+    ├── cusip.py         # CUSIP → ticker resolver (OpenFIGI)
     └── queries.py       # Analytical queries (conviction scores, QoQ changes, etc.)
 ```
 
@@ -89,7 +91,28 @@ Filings already in the database are skipped automatically. HTTP responses are ca
 
 ---
 
-## Step 2 — Launch the Dashboard
+## Step 2 — Resolve CUSIPs to Tickers
+
+Maps every CUSIP in the database to a ticker symbol, company name, and exchange via the [OpenFIGI API](https://www.openfigi.com/api).
+
+**With a free API key (~5 min for ~13k CUSIPs):**
+
+```bash
+export OPENFIGI_API_KEY=your_key_here
+python3 -m pipeline.cusip
+```
+
+**Without a key (~2+ hours, rate limited):**
+
+```bash
+python3 -m pipeline.cusip
+```
+
+Get a free key at [openfigi.com/api](https://www.openfigi.com/api). Already-resolved CUSIPs are skipped on re-runs. Expect ~50–55% match rate — older, delisted, and non-equity instruments won't resolve.
+
+---
+
+## Step 3 — Launch the Dashboard
 
 ```bash
 streamlit run app.py
@@ -99,10 +122,10 @@ Then open **http://localhost:8501** in your browser.
 
 **Single Filer view:**
 - AUM, position count, and largest holding KPIs
-- Portfolio composition donut chart
+- Portfolio composition donut chart (labeled by ticker)
 - Top holdings bar chart
 - Quarter-over-quarter position change chart (requires 2+ periods ingested)
-- Full holdings table with portfolio weight %
+- Full holdings table with ticker, weight %, and share count
 
 **Cross-Filer Overview view:**
 - AUM comparison across all loaded institutions
