@@ -38,13 +38,13 @@ pip3 install -r requirements.txt
 
 All commands are run from the repo root.
 
-**Quickstart — ingest the 10 seed institutions, latest quarter only (~2 min):**
+**Quickstart — ingest the 10 seed institutions, latest quarter only:**
 
 ```bash
 python3 -m pipeline.ingest --seed --latest-only
 ```
 
-**Ingest all history for the seed filers (~10–20 min):**
+**Ingest all history for the seed filers (first run fetches from EDGAR; subsequent runs complete in seconds from cache):**
 
 ```bash
 python3 -m pipeline.ingest --seed
@@ -70,7 +70,10 @@ python3 -m pipeline.ingest --cik 0001067983 --since 2022-01-01
 | `--cik <CIK>` | Ingest a single filer by SEC CIK |
 | `--latest-only` | Only fetch the most recent filing per filer |
 | `--since <YYYY-MM-DD>` | Skip filings filed before this date |
+| `--force` | Re-ingest filings already in the database |
 | `--db <path>` | Use a custom database path (default: `data/13f.db`) |
+
+Filings already in the database are skipped automatically. HTTP responses are cached to `data/http_cache/` — re-runs that hit only the cache complete in a few seconds regardless of history size.
 
 **Seed filers** (pre-configured in `pipeline/edgar.py`):
 - Berkshire Hathaway
