@@ -10,6 +10,7 @@ EDGAR API references:
 import hashlib
 import json
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,44 @@ _HEADERS = {
 _BASE      = "https://www.sec.gov"
 _DATA_BASE = "https://data.sec.gov"
 _EFTS_BASE = "https://efts.sec.gov"
-_RATE_SLEEP = 0.11  # SEC allows ~10 req/s; we stay under
+_RATE_SLEEP  = 0.12   # SEC allows ~10 req/s; we stay safely under
+_MAX_RETRIES = 4
+_RETRY_BASE  = 10     # seconds; doubles each attempt: 10, 20, 40, 80
+
+# Global rate limiter — serialises all HTTP requests across threads so the
+# per-second cap is respected even during concurrent prefetching.
+_rate_lock   = threading.Lock()
+_last_req_at: float = 0.0
+
+
+def _http_get(url: str, **kwargs) -> requests.Response:
+    """
+    Rate-limited GET with exponential backoff on 429.
+
+    The lock is held for the sleep + request so only one in-flight request
+    exists at a time, guaranteeing the SEC rate cap regardless of threading.
+    On 429 the lock is released while waiting so other callers don't pile up.
+    """
+    global _last_req_at
+    for attempt in range(_MAX_RETRIES + 1):
+        with _rate_lock:
+            gap = _RATE_SLEEP - (time.monotonic() - _last_req_at)
+            if gap > 0:
+                time.sleep(gap)
+            _last_req_at = time.monotonic()
+            resp = requests.get(url, headers=_HEADERS, timeout=30, **kwargs)
+
+        if resp.status_code == 429:
+            wait = _RETRY_BASE * (2 ** attempt)
+            print(f"    [429] rate limited — waiting {wait}s (attempt {attempt + 1}/{_MAX_RETRIES})")
+            time.sleep(wait)
+            continue
+
+        resp.raise_for_status()
+        return resp
+
+    resp.raise_for_status()  # re-raise after exhausting retries
+    return resp  # unreachable
 
 # ---------------------------------------------------------------------------
 # Disk cache
@@ -65,9 +103,7 @@ def _get_text(url: str, ttl: int = _TTL_FOREVER, **kwargs) -> str:
     cached = _cache_get(url, ttl)
     if cached is not None:
         return cached
-    resp = requests.get(url, headers=_HEADERS, timeout=30, **kwargs)
-    resp.raise_for_status()
-    time.sleep(_RATE_SLEEP)
+    resp = _http_get(url, **kwargs)
     _cache_set(url, resp.text)
     return resp.text
 
@@ -239,16 +275,16 @@ def prefetch_filing_indexes(
         return
 
     print(f"    Prefetching {len(uncached)} filing indexes concurrently...")
-    rate_lock = threading.Semaphore(max_workers)
     errors: list[str] = []
 
     def _fetch(url: str) -> None:
-        with rate_lock:
-            try:
-                _get_text(url)
-            except Exception as exc:
-                errors.append(f"{url}: {exc}")
+        try:
+            _get_text(url)
+        except Exception as exc:
+            errors.append(f"{url}: {exc}")
 
+    # The global _rate_lock in _http_get already serialises requests; threads
+    # here just avoid blocking the main thread during the total wait time.
     threads = [threading.Thread(target=_fetch, args=(u,), daemon=True) for u in uncached]
     for t in threads:
         t.start()
