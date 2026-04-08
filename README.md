@@ -22,6 +22,8 @@ pip3 install -r requirements.txt
 13F/
 ├── app.py               # Streamlit dashboard
 ├── requirements.txt
+├── .env                 # Local secrets (gitignored)
+├── .env.example         # Template for .env
 ├── data/
 │   ├── 13f.db           # SQLite database (created on first run)
 │   └── http_cache/      # Disk cache for EDGAR HTTP responses
@@ -95,20 +97,22 @@ Filings already in the database are skipped automatically. HTTP responses are ca
 
 Maps every CUSIP in the database to a ticker symbol, company name, and exchange via the [OpenFIGI API](https://www.openfigi.com/api).
 
-**With a free API key (~5 min for ~13k CUSIPs):**
+**Set up your API key (recommended):**
 
 ```bash
-export OPENFIGI_API_KEY=your_key_here
+cp .env.example .env
+# edit .env and set OPENFIGI_API_KEY=your_key_here
+```
+
+Get a free key at [openfigi.com/api](https://www.openfigi.com/api). The key is loaded automatically from `.env` — no `export` needed.
+
+**Run the resolver:**
+
+```bash
 python3 -m pipeline.cusip
 ```
 
-**Without a key (~2+ hours, rate limited):**
-
-```bash
-python3 -m pipeline.cusip
-```
-
-Get a free key at [openfigi.com/api](https://www.openfigi.com/api). Already-resolved CUSIPs are skipped on re-runs. Expect ~50–55% match rate — older, delisted, and non-equity instruments won't resolve.
+Without a key the resolver still works but is rate-limited (~2+ hours for a full history). With a key it completes in ~5 minutes. Already-resolved CUSIPs are skipped on re-runs. Expect ~50–55% match rate — older, delisted, and non-equity instruments won't resolve.
 
 ---
 
@@ -132,6 +136,12 @@ Then open **http://localhost:8501** in your browser.
 - Most widely held securities by breadth (# of institutions) and aggregate value
 - Overlap heatmap: which firms hold which top securities
 
+**Conviction Scores view:**
+- Securities ranked by conviction score: `num_institutions × log(1 + avg_portfolio_weight%)`
+- Rewards securities that are both widely held and carry meaningful position sizes
+- Scatter plots: score vs. avg weight, and breadth vs. concentration
+- Full sortable table with score, # institutions, avg weight, and aggregate value
+
 ---
 
 ## Querying the Database Directly
@@ -151,7 +161,7 @@ periods = available_periods(conn)
 rows = top_holdings(periods[0], top_n=20, conn=conn)
 
 # Conviction scores (weights breadth + position size)
-scores = conviction_scores(periods[0], min_filers=2, conn=conn)
+scores = conviction_scores(periods[0], min_filers=3, conn=conn)
 for r in scores:
     print(r["name_of_issuer"], r["conviction_score"])
 ```
