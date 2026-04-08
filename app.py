@@ -59,11 +59,13 @@ def load_holdings(cik: str, period: str) -> pd.DataFrame:
     conn = db_conn()
     return pd.read_sql(
         """
-        SELECT h.cusip, h.name_of_issuer, h.title_of_class,
-               h.value_thousands, h.shares, h.put_call,
-               h.investment_discretion
+        SELECT h.cusip, COALESCE(s.ticker, h.cusip) AS ticker,
+               COALESCE(s.name, h.name_of_issuer)   AS name_of_issuer,
+               h.title_of_class, h.value_thousands,
+               h.shares, h.put_call, h.investment_discretion
         FROM holdings h
         JOIN filings f ON f.id = h.filing_id
+        LEFT JOIN securities s ON s.cusip = h.cusip
         WHERE f.cik = ? AND f.period_of_report = ?
         ORDER BY h.value_thousands DESC
         """,
@@ -77,11 +79,13 @@ def load_all_holdings(period: str) -> pd.DataFrame:
     return pd.read_sql(
         """
         SELECT f.cik, fi.name AS filer_name,
-               h.cusip, h.name_of_issuer,
+               h.cusip, COALESCE(s.ticker, h.cusip) AS ticker,
+               COALESCE(s.name, h.name_of_issuer)   AS name_of_issuer,
                h.value_thousands, h.shares, h.put_call
         FROM holdings h
         JOIN filings f  ON f.id = h.filing_id
         JOIN filers fi  ON fi.cik = f.cik
+        LEFT JOIN securities s ON s.cusip = h.cusip
         WHERE f.period_of_report = ?
         ORDER BY h.value_thousands DESC
         """,
@@ -184,7 +188,7 @@ if view == "Single Filer":
 
         fig = px.pie(
             pie_data,
-            names="name_of_issuer",
+            names="ticker",
             values="value_thousands",
             hole=0.4,
             color_discrete_sequence=px.colors.qualitative.Plotly,
@@ -201,11 +205,12 @@ if view == "Single Filer":
         fig2 = px.bar(
             bar_data,
             x="value_thousands",
-            y="name_of_issuer",
+            y="ticker",
             orientation="h",
-            labels={"value_thousands": "Value ($K)", "name_of_issuer": ""},
+            labels={"value_thousands": "Value ($K)", "ticker": ""},
             color="value_thousands",
             color_continuous_scale="Blues",
+            hover_data={"name_of_issuer": True},
         )
         fig2.update_layout(
             yaxis={"autorange": "reversed", "tickfont": {"size": 11}},
@@ -222,7 +227,7 @@ if view == "Single Filer":
         old_h = load_holdings(selected_cik, compare_period)
         old_eq = old_h[old_h["put_call"].isna() | (old_h["put_call"] == "")]
 
-        merged = equity[["cusip", "name_of_issuer", "value_thousands"]].merge(
+        merged = equity[["cusip", "ticker", "name_of_issuer", "value_thousands"]].merge(
             old_eq[["cusip", "value_thousands"]].rename(columns={"value_thousands": "old_value"}),
             on="cusip", how="outer",
         )
@@ -248,11 +253,13 @@ if view == "Single Filer":
         })
         fig3 = go.Figure(go.Bar(
             x=top_changes["change"],
-            y=top_changes["name_of_issuer"],
+            y=top_changes["ticker"],
             orientation="h",
             marker_color=colors,
             text=top_changes["status"],
             textposition="auto",
+            customdata=top_changes["name_of_issuer"],
+            hovertemplate="%{customdata}<br>Change: %{x:,.0f}K<extra></extra>",
         ))
         fig3.update_layout(
             xaxis_title="Change in Value ($K)",
@@ -276,7 +283,8 @@ if view == "Single Filer":
     display["value_millions"] = (display["value_thousands"] / 1000).round(2)
     display["weight_%"]       = (display["value_thousands"] / total_aum * 100).round(2)
     st.dataframe(
-        display[["name_of_issuer", "cusip", "title_of_class", "value_millions", "weight_%", "shares"]].rename(columns={
+        display[["ticker", "name_of_issuer", "cusip", "title_of_class", "value_millions", "weight_%", "shares"]].rename(columns={
+            "ticker":         "Ticker",
             "name_of_issuer": "Issuer",
             "cusip":          "CUSIP",
             "title_of_class": "Class",
@@ -330,16 +338,17 @@ else:
     with col_a:
         st.markdown("**By number of institutions holding**")
         breadth = (
-            equity_all.groupby(["cusip", "name_of_issuer"])
+            equity_all.groupby(["cusip", "ticker", "name_of_issuer"])
             .agg(num_filers=("cik", "nunique"), total_value=("value_thousands", "sum"))
             .sort_values("num_filers", ascending=False)
             .head(20)
             .reset_index()
         )
         fig_b = px.bar(
-            breadth, x="num_filers", y="name_of_issuer", orientation="h",
-            labels={"num_filers": "# Institutions", "name_of_issuer": ""},
+            breadth, x="num_filers", y="ticker", orientation="h",
+            labels={"num_filers": "# Institutions", "ticker": ""},
             color="num_filers", color_continuous_scale="Teal",
+            hover_data={"name_of_issuer": True},
         )
         fig_b.update_layout(
             yaxis={"autorange": "reversed"}, coloraxis_showscale=False, margin=dict(t=10, b=10)
@@ -350,9 +359,10 @@ else:
         st.markdown("**By aggregate market value**")
         fig_v = px.bar(
             breadth.sort_values("total_value", ascending=False).head(20),
-            x="total_value", y="name_of_issuer", orientation="h",
-            labels={"total_value": "Aggregate Value ($K)", "name_of_issuer": ""},
+            x="total_value", y="ticker", orientation="h",
+            labels={"total_value": "Aggregate Value ($K)", "ticker": ""},
             color="total_value", color_continuous_scale="Purples",
+            hover_data={"name_of_issuer": True},
         )
         fig_v.update_layout(
             yaxis={"autorange": "reversed"}, coloraxis_showscale=False, margin=dict(t=10, b=10)
@@ -366,10 +376,10 @@ else:
     top_cusips = breadth.head(15)["cusip"].tolist()
     heatmap_data = (
         equity_all[equity_all["cusip"].isin(top_cusips)]
-        .groupby(["filer_name", "name_of_issuer"])["value_thousands"]
+        .groupby(["filer_name", "ticker"])["value_thousands"]
         .sum()
         .reset_index()
-        .pivot(index="filer_name", columns="name_of_issuer", values="value_thousands")
+        .pivot(index="filer_name", columns="ticker", values="value_thousands")
         .fillna(0)
     )
     fig_heat = px.imshow(
