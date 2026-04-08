@@ -26,11 +26,25 @@ from pipeline import database, edgar
 from pipeline.parser import parse_auto
 
 
+def _already_ingested(conn, accession_number: str) -> bool:
+    """Return True if this filing has holdings rows in the DB."""
+    row = conn.execute(
+        """
+        SELECT f.id FROM filings f
+        WHERE f.accession_number = ?
+          AND EXISTS (SELECT 1 FROM holdings h WHERE h.filing_id = f.id)
+        """,
+        (accession_number,),
+    ).fetchone()
+    return row is not None
+
+
 def ingest_filer(
     cik: str,
     *,
     latest_only: bool = False,
     since: str | None = None,
+    force: bool = False,
     db_path: Path = database.DB_PATH,
 ) -> None:
     print(f"\n{'='*60}")
@@ -62,15 +76,27 @@ def ingest_filer(
 
     cik_bare = cik.lstrip("0") or "0"
 
+    # Skip filings already in the DB (unless --force)
+    if not force:
+        with database.get_connection(db_path) as conn:
+            filings = [f for f in filings if not _already_ingested(conn, f["accession_number"])]
+        if not filings:
+            print("  All filings already ingested. Use --force to re-ingest.")
+            return
+        print(f"  {len(filings)} new filing(s) to ingest.")
+
+    # Warm the index.json cache concurrently before the serial loop
+    edgar.prefetch_filing_indexes(cik_bare, filings)
+
     for filing_meta in filings:
-        acc   = filing_meta["accession_number"]
+        acc    = filing_meta["accession_number"]
         period = filing_meta["period_of_report"]
         filed  = filing_meta["filed_date"]
         rtype  = filing_meta["report_type"]
 
         print(f"\n  Filing {acc}  period={period}  filed={filed}")
 
-        # Find information table XML
+        # Find information table document
         xml_url = edgar.get_information_table_url(cik_bare, acc)
         if not xml_url:
             print("    [SKIP] could not locate information table document")
@@ -78,7 +104,7 @@ def ingest_filer(
 
         print(f"    URL: {xml_url}")
 
-        # Fetch XML
+        # Fetch document (served from cache after first run)
         try:
             xml_text = edgar.fetch_document(xml_url)
         except Exception as exc:
@@ -109,7 +135,6 @@ def ingest_filer(
                 report_type=rtype,
                 raw_url=xml_url,
             )
-            # Remove old holdings for this filing before re-inserting
             conn.execute("DELETE FROM holdings WHERE filing_id = ?", (filing_id,))
             database.insert_holdings(conn, filing_id, holdings)
 
@@ -123,6 +148,7 @@ def main() -> None:
     ap.add_argument("--seed",        action="store_true", help="Ingest all seed filers")
     ap.add_argument("--latest-only", action="store_true", help="Only ingest most recent filing per filer")
     ap.add_argument("--since",       help="Only ingest filings filed on/after this date (YYYY-MM-DD)")
+    ap.add_argument("--force",       action="store_true", help="Re-ingest filings already in the database")
     ap.add_argument("--db",          help="Path to SQLite database", default=str(database.DB_PATH))
     args = ap.parse_args()
 
@@ -155,6 +181,7 @@ def main() -> None:
                 cik,
                 latest_only=args.latest_only,
                 since=args.since,
+                force=args.force,
                 db_path=db_path,
             )
         except Exception as exc:

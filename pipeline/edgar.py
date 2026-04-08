@@ -7,8 +7,11 @@ EDGAR API references:
   - EFTS search:  https://efts.sec.gov/LATEST/search-index?q=%2213F-HR%22&...
 """
 
+import hashlib
+import json
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -17,17 +20,60 @@ _HEADERS = {
     "User-Agent": "13F Research Pipeline research@example.com",
     "Accept-Encoding": "gzip, deflate",
 }
-_BASE = "https://www.sec.gov"
+_BASE      = "https://www.sec.gov"
 _DATA_BASE = "https://data.sec.gov"
 _EFTS_BASE = "https://efts.sec.gov"
 _RATE_SLEEP = 0.11  # SEC allows ~10 req/s; we stay under
 
+# ---------------------------------------------------------------------------
+# Disk cache
+# ---------------------------------------------------------------------------
+# Filing documents and index files are immutable once published — cache forever.
+# Submissions JSON changes when new filings arrive — cache for 1 hour.
 
-def _get(url: str, **kwargs) -> requests.Response:
+_CACHE_DIR   = Path(__file__).parent.parent / "data" / "http_cache"
+_TTL_FOREVER = 10 * 365 * 24 * 3600   # 10 years ≈ immutable
+_TTL_SHORT   = 3600                    # 1 hour  for submissions JSON
+
+
+def _cache_path(url: str) -> Path:
+    key = hashlib.sha256(url.encode()).hexdigest()
+    return _CACHE_DIR / key[:2] / (key + ".json")
+
+
+def _cache_get(url: str, ttl: int) -> str | None:
+    p = _cache_path(url)
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text())
+        if ttl == _TTL_FOREVER or (time.time() - data["ts"] < ttl):
+            return data["content"]
+    except Exception:
+        pass
+    return None
+
+
+def _cache_set(url: str, content: str) -> None:
+    p = _cache_path(url)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"url": url, "ts": time.time(), "content": content}))
+
+
+def _get_text(url: str, ttl: int = _TTL_FOREVER, **kwargs) -> str:
+    """Fetch URL as text, reading from disk cache when available."""
+    cached = _cache_get(url, ttl)
+    if cached is not None:
+        return cached
     resp = requests.get(url, headers=_HEADERS, timeout=30, **kwargs)
     resp.raise_for_status()
     time.sleep(_RATE_SLEEP)
-    return resp
+    _cache_set(url, resp.text)
+    return resp.text
+
+
+def _get_json(url: str, ttl: int = _TTL_FOREVER, **kwargs) -> Any:
+    return json.loads(_get_text(url, ttl=ttl, **kwargs))
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +87,7 @@ def get_filer_submissions(cik: str) -> dict[str, Any]:
     """
     cik_padded = cik.zfill(10)
     url = f"{_DATA_BASE}/submissions/CIK{cik_padded}.json"
-    return _get(url).json()
+    return _get_json(url, ttl=_TTL_SHORT)
 
 
 def get_13f_filings_for_filer(cik: str) -> list[dict[str, Any]]:
@@ -93,7 +139,7 @@ def _fetch_older_pages(data: dict, cik: str) -> list[dict]:
     for file_entry in data.get("filings", {}).get("files", []):
         url = f"{_DATA_BASE}/submissions/{file_entry['name']}"
         try:
-            pages.append(_get(url).json())
+            pages.append(_get_json(url, ttl=_TTL_SHORT))
         except Exception:
             pass
     return pages
@@ -104,21 +150,10 @@ def _fetch_older_pages(data: dict, cik: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def get_filing_index(cik: str, accession_number: str) -> dict[str, Any]:
-    """
-    Return the filing index JSON for a specific accession number.
-    Accession number may contain dashes or not.
-    """
+    """Return the filing index JSON for a specific accession number."""
     acc_clean = accession_number.replace("-", "")
-    acc_dashed = f"{acc_clean[:10]}-{acc_clean[10:12]}-{acc_clean[12:]}"
-    url = f"{_BASE}/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=13F-HR&dateb=&owner=include&count=1&search_text="
-    # Use the index JSON endpoint instead
-    url = f"{_DATA_BASE}/submissions/CIK{cik.zfill(10)}.json"
-    # Directly build the filing folder URL
-    folder_url = (
-        f"{_BASE}/Archives/edgar/data/{cik.lstrip('0')}/{acc_clean}/"
-    )
-    resp = _get(folder_url + "index.json")
-    return resp.json()
+    url = f"{_BASE}/Archives/edgar/data/{cik.lstrip('0')}/{acc_clean}/index.json"
+    return _get_json(url)  # immutable — cache forever
 
 
 def get_information_table_url(cik: str, accession_number: str) -> str | None:
@@ -175,8 +210,53 @@ def get_information_table_url(cik: str, accession_number: str) -> str | None:
 
 
 def fetch_document(url: str) -> str:
-    """Fetch raw text content of an EDGAR document."""
-    return _get(url).text
+    """Fetch raw text/XML content of an EDGAR document (cached forever)."""
+    return _get_text(url)  # immutable — cache forever
+
+
+def prefetch_filing_indexes(
+    cik: str,
+    filings: list[dict[str, Any]],
+    max_workers: int = 8,
+) -> None:
+    """
+    Concurrently warm the cache for all filing index.json files.
+    Hits the network only for accession numbers not already cached;
+    skips the SEC rate-limit sleep for cache hits, so this is fast
+    even for large backlogs.
+    """
+    import threading
+
+    cik_bare = cik.lstrip("0") or "0"
+    uncached: list[str] = []
+    for f in filings:
+        acc_clean = f["accession_number"].replace("-", "")
+        url = f"{_BASE}/Archives/edgar/data/{cik_bare}/{acc_clean}/index.json"
+        if _cache_get(url, _TTL_FOREVER) is None:
+            uncached.append(url)
+
+    if not uncached:
+        return
+
+    print(f"    Prefetching {len(uncached)} filing indexes concurrently...")
+    rate_lock = threading.Semaphore(max_workers)
+    errors: list[str] = []
+
+    def _fetch(url: str) -> None:
+        with rate_lock:
+            try:
+                _get_text(url)
+            except Exception as exc:
+                errors.append(f"{url}: {exc}")
+
+    threads = [threading.Thread(target=_fetch, args=(u,), daemon=True) for u in uncached]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    if errors:
+        print(f"    {len(errors)} prefetch error(s) (will retry individually)")
 
 
 # ---------------------------------------------------------------------------
