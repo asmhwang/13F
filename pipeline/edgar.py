@@ -123,31 +123,53 @@ def get_filing_index(cik: str, accession_number: str) -> dict[str, Any]:
 
 def get_information_table_url(cik: str, accession_number: str) -> str | None:
     """
-    Find the URL of the 13F information table XML document within a filing.
-    Returns None if not found.
+    Find the URL of the 13F information table document within a filing.
+
+    Search order:
+      1. Any XML whose name contains "informationtable"   (post-2013 standard)
+      2. Any other .xml file that isn't the primary doc   (edge cases)
+      3. The largest .txt file that isn't the index       (pre-2013 SGML)
+
+    Returns None if nothing usable is found.
     """
     acc_clean = accession_number.replace("-", "")
+    base_url  = f"{_BASE}/Archives/edgar/data/{cik.lstrip('0')}/{acc_clean}"
+
     try:
         index = get_filing_index(cik, accession_number)
     except Exception:
         return None
 
-    for item in index.get("directory", {}).get("item", []):
+    items = index.get("directory", {}).get("item", [])
+
+    # 1. Named information table XML
+    for item in items:
         name: str = item.get("name", "")
         if "informationtable" in name.lower() and name.endswith(".xml"):
-            return (
-                f"{_BASE}/Archives/edgar/data/{cik.lstrip('0')}"
-                f"/{acc_clean}/{name}"
-            )
+            return f"{base_url}/{name}"
 
-    # Fallback: look for any XML that isn't the primary doc
-    for item in index.get("directory", {}).get("item", []):
+    # 2. Any other non-primary XML
+    for item in items:
         name = item.get("name", "")
         if name.endswith(".xml") and "primary" not in name.lower():
-            return (
-                f"{_BASE}/Archives/edgar/data/{cik.lstrip('0')}"
-                f"/{acc_clean}/{name}"
-            )
+            return f"{base_url}/{name}"
+
+    # 3. Legacy: largest .txt that isn't the index/header bundle
+    txt_items = [
+        item for item in items
+        if item.get("name", "").endswith(".txt")
+        and "index" not in item.get("name", "").lower()
+        and item.get("name", "") != f"{acc_clean}.txt"
+    ]
+    if txt_items:
+        # Pick by reported file size (stored as a string like "20613")
+        def _size(item: dict) -> int:
+            try:
+                return int(item.get("size", "0"))
+            except ValueError:
+                return 0
+        best = max(txt_items, key=_size)
+        return f"{base_url}/{best['name']}"
 
     return None
 

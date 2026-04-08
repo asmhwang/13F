@@ -22,7 +22,8 @@ from pathlib import Path
 # Allow running as `python pipeline/ingest.py` from repo root
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pipeline import database, edgar, parser
+from pipeline import database, edgar
+from pipeline.parser import parse_auto
 
 
 def ingest_filer(
@@ -84,9 +85,9 @@ def ingest_filer(
             print(f"    [ERROR] fetch failed: {exc}")
             continue
 
-        # Parse holdings
+        # Parse holdings (auto-detects XML vs legacy text format)
         try:
-            holdings = parser.parse_information_table(xml_text)
+            holdings = parse_auto(xml_text)
         except ValueError as exc:
             print(f"    [ERROR] parse failed: {exc}")
             continue
