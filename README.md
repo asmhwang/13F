@@ -11,7 +11,7 @@ There are 13F files produced by the SEC which track institutional investors ($10
 Install dependencies:
 
 ```bash
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 ```
 
 ---
@@ -41,25 +41,25 @@ All commands are run from the repo root.
 **Quickstart — ingest the 10 seed institutions, latest quarter only (~2 min):**
 
 ```bash
-python -m pipeline.ingest --seed --latest-only
+python3 -m pipeline.ingest --seed --latest-only
 ```
 
 **Ingest all history for the seed filers (~10–20 min):**
 
 ```bash
-python -m pipeline.ingest --seed
+python3 -m pipeline.ingest --seed
 ```
 
 **Ingest a specific filer by CIK:**
 
 ```bash
-python -m pipeline.ingest --cik 0001067983
+python3 -m pipeline.ingest --cik 0001067983
 ```
 
 **Ingest a specific filer since a given date:**
 
 ```bash
-python -m pipeline.ingest --cik 0001067983 --since 2022-01-01
+python3 -m pipeline.ingest --cik 0001067983 --since 2022-01-01
 ```
 
 **Flags:**
