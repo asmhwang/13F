@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 from pipeline.database import DB_PATH, get_connection, upsert_security
 
