@@ -21,11 +21,13 @@ pip3 install -r requirements.txt
 ```
 13F/
 ├── app.py               # Streamlit dashboard
+├── refresh.sh           # One-shot refresh: ingest + resolve CUSIPs
 ├── requirements.txt
 ├── .env                 # Local secrets (gitignored)
 ├── .env.example         # Template for .env
 ├── data/
 │   ├── 13f.db           # SQLite database (created on first run)
+│   ├── refresh.log      # Log output from refresh runs
 │   └── http_cache/      # Disk cache for EDGAR HTTP responses
 └── pipeline/
     ├── database.py      # Schema + DB helpers
@@ -141,6 +143,27 @@ Then open **http://localhost:8501** in your browser.
 - Rewards securities that are both widely held and carry meaningful position sizes
 - Scatter plots: score vs. avg weight, and breadth vs. concentration
 - Full sortable table with score, # institutions, avg weight, and aggregate value
+
+---
+
+## Keeping Data Current
+
+13F filings are published quarterly (~45 days after each quarter end). Run the refresh script to pull the latest filings and resolve any new CUSIPs:
+
+```bash
+bash refresh.sh
+```
+
+Output is logged to `data/refresh.log`. Already-ingested filings and already-resolved CUSIPs are skipped, so the script completes in seconds when nothing is new.
+
+**Automatic weekly refresh (cron):**
+
+```bash
+# Runs every Monday at 7am — add to crontab with: crontab -e
+0 7 * * 1 /path/to/13F/refresh.sh
+```
+
+A **Refresh Data** button in the dashboard sidebar runs the same script on demand and reloads the UI when complete.
 
 ---
 
