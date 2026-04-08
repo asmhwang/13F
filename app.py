@@ -6,6 +6,7 @@ Run with:
 """
 
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
@@ -196,6 +197,31 @@ with st.sidebar:
 
     if view == "Conviction Scores":
         min_filers_filter = st.slider("Min institutions holding", 1, 10, 3)
+
+    st.divider()
+    st.header("Data")
+
+    _refresh_script = Path(__file__).parent / "refresh.sh"
+    if st.button("Refresh Data", help="Ingest latest filings + resolve new CUSIPs"):
+        with st.spinner("Running refresh…"):
+            result = subprocess.run(
+                ["bash", str(_refresh_script)],
+                capture_output=True,
+                text=True,
+            )
+        if result.returncode == 0:
+            st.success("Refresh complete.")
+            st.cache_data.clear()
+            st.rerun()
+        else:
+            st.error("Refresh failed.")
+            st.code(result.stderr or result.stdout)
+
+    _log_path = Path(__file__).parent / "data" / "refresh.log"
+    if _log_path.exists():
+        with st.expander("Last refresh log"):
+            lines = _log_path.read_text().splitlines()
+            st.code("\n".join(lines[-40:]))
 
 # ---------------------------------------------------------------------------
 # Single Filer View
