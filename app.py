@@ -103,6 +103,57 @@ def load_filer_periods(cik: str) -> list[str]:
     return [r[0] for r in rows]
 
 
+@st.cache_data(ttl=300)
+def load_conviction_scores(period: str, min_filers: int) -> pd.DataFrame:
+    conn = db_conn()
+    return pd.read_sql(
+        """
+        WITH filer_aum AS (
+            SELECT f.cik, SUM(h.value_thousands) AS total_aum
+            FROM holdings h
+            JOIN filings f ON f.id = h.filing_id
+            WHERE f.period_of_report = ?
+              AND (h.put_call IS NULL OR h.put_call = '')
+            GROUP BY f.cik
+        ),
+        position_weights AS (
+            SELECT
+                h.cusip,
+                COALESCE(s.name, h.name_of_issuer) AS name_of_issuer,
+                COALESCE(s.ticker, h.cusip)         AS ticker,
+                f.cik,
+                h.value_thousands,
+                CAST(h.value_thousands AS REAL) / NULLIF(fa.total_aum, 0) * 100
+                    AS portfolio_weight_pct
+            FROM holdings h
+            JOIN filings   f  ON f.id = h.filing_id
+            JOIN filer_aum fa ON fa.cik = f.cik
+            LEFT JOIN securities s ON s.cusip = h.cusip
+            WHERE f.period_of_report = ?
+              AND (h.put_call IS NULL OR h.put_call = '')
+        )
+        SELECT
+            cusip,
+            ticker,
+            name_of_issuer,
+            COUNT(DISTINCT cik)                              AS num_filers,
+            SUM(value_thousands)                             AS total_value_thousands,
+            ROUND(AVG(portfolio_weight_pct), 2)              AS avg_weight_pct,
+            ROUND(
+                COUNT(DISTINCT cik)
+                * LOG(1 + AVG(portfolio_weight_pct))
+                * 1.0,
+            2)                                               AS conviction_score
+        FROM position_weights
+        GROUP BY cusip, ticker, name_of_issuer
+        HAVING num_filers >= ?
+        ORDER BY conviction_score DESC
+        """,
+        conn,
+        params=(period, period, min_filers),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
@@ -117,7 +168,7 @@ if filers_df.empty:
 with st.sidebar:
     st.header("Filters")
 
-    view = st.radio("View", ["Single Filer", "Cross-Filer Overview"], index=0)
+    view = st.radio("View", ["Single Filer", "Cross-Filer Overview", "Conviction Scores"], index=0)
 
     if view == "Single Filer":
         filer_options = dict(zip(filers_df["name"], filers_df["cik"]))
@@ -142,6 +193,9 @@ with st.sidebar:
 
     else:
         selected_period = st.selectbox("Period", periods)
+
+    if view == "Conviction Scores":
+        min_filers_filter = st.slider("Min institutions holding", 1, 10, 3)
 
 # ---------------------------------------------------------------------------
 # Single Filer View
@@ -297,10 +351,113 @@ if view == "Single Filer":
     )
 
 # ---------------------------------------------------------------------------
+# Conviction Scores
+# ---------------------------------------------------------------------------
+
+elif view == "Conviction Scores":
+    st.subheader(f"Conviction Scores — {selected_period}")
+    st.caption(
+        "Score = num_institutions × log(1 + avg_portfolio_weight%) — "
+        "rewards securities that are widely held AND carry meaningful position sizes."
+    )
+
+    scores_df = load_conviction_scores(selected_period, min_filers_filter)
+
+    if scores_df.empty:
+        st.info("No securities meet the minimum institution threshold for this period.")
+        st.stop()
+
+    top_n_scores = st.slider("Show top N", 10, 50, 25, key="scores_n")
+    plot_df = scores_df.head(top_n_scores).copy()
+
+    fig_scores = px.bar(
+        plot_df,
+        x="conviction_score",
+        y="ticker",
+        orientation="h",
+        color="conviction_score",
+        color_continuous_scale="Teal",
+        hover_data={"name_of_issuer": True, "num_filers": True, "avg_weight_pct": True},
+        labels={
+            "conviction_score": "Conviction Score",
+            "ticker": "",
+            "num_filers": "# Institutions",
+            "avg_weight_pct": "Avg Weight %",
+        },
+    )
+    fig_scores.update_layout(
+        yaxis={"autorange": "reversed"},
+        coloraxis_showscale=False,
+        margin=dict(t=10, b=10),
+    )
+    st.plotly_chart(fig_scores, width="stretch")
+
+    st.divider()
+
+    col_s1, col_s2 = st.columns([1, 1])
+
+    with col_s1:
+        st.markdown("**Score vs. Avg Portfolio Weight**")
+        fig_scatter = px.scatter(
+            scores_df.head(50),
+            x="avg_weight_pct",
+            y="conviction_score",
+            size="num_filers",
+            color="num_filers",
+            hover_name="ticker",
+            hover_data={"name_of_issuer": True},
+            color_continuous_scale="Blues",
+            labels={
+                "avg_weight_pct": "Avg Portfolio Weight %",
+                "conviction_score": "Conviction Score",
+                "num_filers": "# Institutions",
+            },
+        )
+        fig_scatter.update_layout(margin=dict(t=10, b=10))
+        st.plotly_chart(fig_scatter, width="stretch")
+
+    with col_s2:
+        st.markdown("**Breadth vs. Concentration**")
+        fig_bv = px.scatter(
+            scores_df.head(50),
+            x="num_filers",
+            y="avg_weight_pct",
+            size="total_value_thousands",
+            hover_name="ticker",
+            hover_data={"name_of_issuer": True, "conviction_score": True},
+            color="conviction_score",
+            color_continuous_scale="Teal",
+            labels={
+                "num_filers": "# Institutions Holding",
+                "avg_weight_pct": "Avg Portfolio Weight %",
+                "conviction_score": "Conviction Score",
+            },
+        )
+        fig_bv.update_layout(margin=dict(t=10, b=10), coloraxis_showscale=False)
+        st.plotly_chart(fig_bv, width="stretch")
+
+    st.divider()
+    st.subheader("Full Conviction Table")
+    display_scores = scores_df.copy()
+    display_scores["total_value_billions"] = (display_scores["total_value_thousands"] / 1_000_000).round(2)
+    st.dataframe(
+        display_scores[["ticker", "name_of_issuer", "num_filers", "avg_weight_pct", "total_value_billions", "conviction_score"]].rename(columns={
+            "ticker":               "Ticker",
+            "name_of_issuer":       "Issuer",
+            "num_filers":           "# Institutions",
+            "avg_weight_pct":       "Avg Weight %",
+            "total_value_billions": "Total Value ($B)",
+            "conviction_score":     "Conviction Score",
+        }),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+# ---------------------------------------------------------------------------
 # Cross-Filer Overview
 # ---------------------------------------------------------------------------
 
-else:
+elif view == "Cross-Filer Overview":
     all_h = load_all_holdings(selected_period)
 
     if all_h.empty:
