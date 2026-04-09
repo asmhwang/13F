@@ -299,40 +299,41 @@ def prefetch_filing_indexes(
 # Bulk search (top filers by AUM)
 # ---------------------------------------------------------------------------
 
-def search_13f_filers(query: str = "", max_results: int = 20) -> list[dict[str, Any]]:
+def search_filers_by_name(query: str, max_results: int = 20) -> list[dict[str, Any]]:
     """
-    Search EDGAR full-text search for 13F-HR filers.
-    Returns list of {cik, name, latest_filing_date}.
+    Search EDGAR for 13F-HR filers by institution name.
+
+    Returns list of {cik, name} dicts. Returns [] if query is under 3 chars
+    or on network error.
     """
-    url = (
-        f"{_EFTS_BASE}/LATEST/search-index"
-        f"?q=%2213F-HR%22&dateRange=custom&startdt=2024-01-01"
-        f"&forms=13F-HR&hits.hits._source=period_of_report,file_date,entity_name,file_num"
-        f"&hits.hits.total.value=true"
-    )
-    if query:
-        url += f"&q=%2213F-HR%22+%22{requests.utils.quote(query)}%22"
+    if len(query.strip()) < 3:
+        return []
 
     params = {
-        "q": f'"13F-HR"',
+        "q": f'"{query}"',
         "forms": "13F-HR",
-        "dateRange": "custom",
-        "startdt": "2024-10-01",
-        "enddt": "2025-03-31",
+        "hits.hits._source": "entity_name,file_num",
         "hits.hits.total.value": "true",
     }
-    resp = _http_get(f"{_EFTS_BASE}/LATEST/search-index", params=params)
-    data = resp.json()
+    try:
+        resp = _http_get(
+            f"{_EFTS_BASE}/LATEST/search-index",
+            params=params,
+            timeout=10,
+        )
+        resp.raise_for_status()
+    except Exception:
+        return []
 
     results = []
-    for hit in data.get("hits", {}).get("hits", [])[:max_results]:
+    for hit in resp.json().get("hits", {}).get("hits", [])[:max_results]:
         src = hit.get("_source", {})
-        results.append({
-            "cik":          src.get("file_num", "").replace("028-", "").lstrip("0"),
-            "entity_name":  src.get("entity_name", ""),
-            "filed_date":   src.get("file_date", ""),
-            "period":       src.get("period_of_report", ""),
-        })
+        raw_file_num = src.get("file_num", "")
+        cik = raw_file_num.replace("028-", "").lstrip("0") or "0"
+        name = src.get("entity_name", "")
+        if cik and name:
+            results.append({"cik": cik, "name": name})
+
     return results
 
 
