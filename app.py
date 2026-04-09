@@ -577,7 +577,6 @@ def _run_ingest(cik: str, filer_name: str) -> None:
         with _ingest_lock:
             _ingest_jobs[cik]["message"] = "Resolving CUSIPs..."
         update_securities(quiet=True)
-        st.cache_data.clear()
         with _ingest_lock:
             _ingest_jobs[cik]["status"] = "done"
             _ingest_jobs[cik]["message"] = "Complete."
@@ -610,7 +609,6 @@ def _run_refresh() -> None:
         result = subprocess.run(
             ["bash", str(script)], capture_output=True, text=True
         )
-        st.cache_data.clear()
         with _refresh_lock:
             if result.returncode == 0:
                 _refresh_status = {"running": False, "done": True, "error": None}
@@ -845,6 +843,7 @@ with st.sidebar:
             st.rerun()
         if _rs["done"]:
             st.success("Refresh complete.")
+            st.cache_data.clear()
             with _refresh_lock:
                 _refresh_status["done"] = False
         elif _rs["error"]:
@@ -921,6 +920,7 @@ with st.sidebar:
             st.info(f"⏳ Ingesting **{name}**...\n\n{job['message']}", icon=None)
         elif status == "done":
             st.success(f"✓ **{name}** added successfully.", icon=None)
+            st.cache_data.clear()
             to_remove.append(cik)
         elif status == "error":
             st.error(f"✗ **{name}** failed: {job['message']}", icon=None)
