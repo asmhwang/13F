@@ -342,7 +342,7 @@ def search_filers_by_name(query: str, max_results: int = 20) -> list[dict[str, A
 # ---------------------------------------------------------------------------
 
 SEED_FILERS = [
-    # (CIK, name)
+    # ── Already tracked ──────────────────────────────────────────────────
     ("0001067983", "Berkshire Hathaway"),
     ("0001336528", "Pershing Square Capital Management"),
     ("0001037389", "Renaissance Technologies"),
@@ -353,4 +353,31 @@ SEED_FILERS = [
     ("0001135730", "Coatue Management"),
     ("0001103804", "Viking Global Investors"),
     ("0001061165", "Lone Pine Capital"),
+    # ── Activist ─────────────────────────────────────────────────────────
+    ("0001791786", "Elliott Investment Management"),
+    ("0001517137", "Starboard Value"),
+    ("0001351069", "ValueAct Capital"),
+    ("0001040273", "Third Point"),
+    # ── Long / Short Equity ──────────────────────────────────────────────
+    ("0001009268", "D.E. Shaw"),
+    ("0001179392", "Two Sigma Investments"),
+    ("0001423053", "Citadel Advisors"),
+    ("0001603466", "Point72 Asset Management"),
+    ("0001061768", "Baupost Group"),
+    # ── Growth ───────────────────────────────────────────────────────────
+    ("0001697748", "ARK Investment Management"),
+    ("0001088875", "Baillie Gifford"),
+    ("0000728014", "Ruane Cunniff & Goldfarb"),
+    # ── Value ────────────────────────────────────────────────────────────
+    ("0000732905", "Tweedy Browne"),
+    ("0001079114", "Greenlight Capital"),
+    # ── Macro / Family Office ────────────────────────────────────────────
+    ("0001536411", "Duquesne Family Office"),
+    # ── Large Asset Managers ─────────────────────────────────────────────
+    ("0001086364", "BlackRock Advisors"),
+    ("0000102909", "Vanguard Group"),
+    ("0000315066", "FMR LLC (Fidelity)"),
+    ("0000080255", "T. Rowe Price Associates"),
+    ("0000038777", "Franklin Resources"),
+    ("0001422848", "Capital Research Global Investors"),
 ]
