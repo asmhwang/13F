@@ -583,6 +583,12 @@ def load_holdings(cik: str, period: str) -> pd.DataFrame:
         JOIN filings f ON f.id = h.filing_id
         LEFT JOIN securities s ON s.cusip = h.cusip
         WHERE f.cik = ? AND f.period_of_report = ?
+          AND h.value_thousands > 0
+          AND f.id = (
+              SELECT f2.id FROM filings f2
+              WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
+              ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
+          )
         ORDER BY h.value_thousands DESC
         """,
         conn, params=(cik, period),
@@ -603,6 +609,12 @@ def load_all_holdings(period: str) -> pd.DataFrame:
         JOIN filers fi  ON fi.cik = f.cik
         LEFT JOIN securities s ON s.cusip = h.cusip
         WHERE f.period_of_report = ?
+          AND h.value_thousands > 0
+          AND f.id = (
+              SELECT f2.id FROM filings f2
+              WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
+              ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
+          )
         ORDER BY h.value_thousands DESC
         """,
         conn, params=(period,),
@@ -624,29 +636,40 @@ def load_conviction_scores(period: str, min_filers: int) -> pd.DataFrame:
     conn = db_conn()
     return pd.read_sql(
         """
-        WITH filer_aum AS (
-            SELECT f.cik, SUM(h.value_thousands) AS total_aum
-            FROM holdings h
-            JOIN filings f ON f.id = h.filing_id
+        WITH latest_filings AS (
+            -- One row per filer: the most recently filed filing for this period
+            SELECT f.id, f.cik
+            FROM filings f
             WHERE f.period_of_report = ?
-              AND (h.put_call IS NULL OR h.put_call = '')
-            GROUP BY f.cik
+              AND f.id = (
+                  SELECT f2.id FROM filings f2
+                  WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
+                  ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
+              )
+        ),
+        filer_aum AS (
+            SELECT lf.cik, SUM(h.value_thousands) AS total_aum
+            FROM holdings h
+            JOIN latest_filings lf ON lf.id = h.filing_id
+            WHERE (h.put_call IS NULL OR h.put_call = '')
+              AND h.value_thousands > 0
+            GROUP BY lf.cik
         ),
         position_weights AS (
             SELECT
                 h.cusip,
                 COALESCE(s.name, h.name_of_issuer) AS name_of_issuer,
                 COALESCE(s.ticker, h.cusip)         AS ticker,
-                f.cik,
+                lf.cik,
                 h.value_thousands,
                 CAST(h.value_thousands AS REAL) / NULLIF(fa.total_aum, 0) * 100
                     AS portfolio_weight_pct
             FROM holdings h
-            JOIN filings   f  ON f.id = h.filing_id
-            JOIN filer_aum fa ON fa.cik = f.cik
+            JOIN latest_filings lf ON lf.id = h.filing_id
+            JOIN filer_aum fa      ON fa.cik = lf.cik
             LEFT JOIN securities s ON s.cusip = h.cusip
-            WHERE f.period_of_report = ?
-              AND (h.put_call IS NULL OR h.put_call = '')
+            WHERE (h.put_call IS NULL OR h.put_call = '')
+              AND h.value_thousands > 0
         )
         SELECT
             cusip, ticker, name_of_issuer,
@@ -664,7 +687,7 @@ def load_conviction_scores(period: str, min_filers: int) -> pd.DataFrame:
         ORDER BY conviction_score DESC
         """,
         conn,
-        params=(period, period, min_filers),
+        params=(period, min_filers),
     )
 
 

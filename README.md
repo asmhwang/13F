@@ -1,6 +1,13 @@
 # 13F
 
-There are 13F files produced by the SEC which track institutional investors ($100M+ AUM) quarterly. Our goal is to create actionable insights after ingesting these files to create conviction scores and notice patterns for different securities.
+A pipeline and dashboard for ingesting, normalizing, and analyzing SEC 13F-HR filings. Tracks institutional investors ($100M+ AUM) quarterly and surfaces conviction scores, position changes, and cross-filer patterns.
+
+**Key features:**
+- Ingests filings from SEC EDGAR (XML and legacy text formats), with HTTP disk caching for fast re-runs
+- Handles amendments (13F-HR/A) correctly — always uses the latest amended filing per period
+- Normalizes the SEC's Q4 2022 unit change (value field switched from thousands to raw dollars)
+- Resolves CUSIPs to tickers/names via OpenFIGI
+- Streamlit dashboard with single-filer deep-dives, cross-filer comparison, and conviction scoring
 
 ---
 
@@ -93,6 +100,10 @@ Filings already in the database are skipped automatically. HTTP responses are ca
 - Viking Global Investors
 - Lone Pine Capital
 
+> **Note on amendments:** When a filer files a 13F-HR/A amendment, only the most recently filed version for that period is used. All queries automatically deduplicate amendments.
+
+> **Note on SEC unit change:** Starting with periods ending on or after 2022-12-31, the SEC changed the `<value>` field in 13F XML filings from thousands of dollars to raw dollars. The pipeline normalizes this automatically on ingestion.
+
 ---
 
 ## Step 2 — Resolve CUSIPs to Tickers
@@ -143,6 +154,8 @@ Then open **http://localhost:8501** in your browser.
 - Rewards securities that are both widely held and carry meaningful position sizes
 - Scatter plots: score vs. avg weight, and breadth vs. concentration
 - Full sortable table with score, # institutions, avg weight, and aggregate value
+
+All views filter out options (puts/calls), zero-value rows, and duplicate amendments automatically.
 
 ---
 

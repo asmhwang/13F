@@ -321,7 +321,7 @@ def search_13f_filers(query: str = "", max_results: int = 20) -> list[dict[str, 
         "enddt": "2025-03-31",
         "hits.hits.total.value": "true",
     }
-    resp = _get(f"{_EFTS_BASE}/LATEST/search-index", params=params)
+    resp = _http_get(f"{_EFTS_BASE}/LATEST/search-index", params=params)
     data = resp.json()
 
     results = []

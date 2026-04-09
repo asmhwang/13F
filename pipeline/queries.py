@@ -42,6 +42,12 @@ def top_holdings(
         JOIN filings f ON f.id = h.filing_id
         WHERE f.period_of_report = ?
           AND (h.put_call IS NULL OR h.put_call = '')
+          AND h.value_thousands > 0
+          AND f.id = (
+              SELECT f2.id FROM filings f2
+              WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
+              ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
+          )
         GROUP BY h.cusip, h.name_of_issuer
         ORDER BY total_value_thousands DESC
         LIMIT ?
@@ -74,6 +80,12 @@ def position_changes(
             JOIN filings f ON f.id = h.filing_id
             WHERE f.cik = ? AND f.period_of_report = ?
               AND (h.put_call IS NULL OR h.put_call = '')
+              AND h.value_thousands > 0
+              AND f.id = (
+                  SELECT f2.id FROM filings f2
+                  WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
+                  ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
+              )
         ),
         new_h AS (
             SELECT h.cusip, h.name_of_issuer, h.value_thousands, h.shares
@@ -81,6 +93,12 @@ def position_changes(
             JOIN filings f ON f.id = h.filing_id
             WHERE f.cik = ? AND f.period_of_report = ?
               AND (h.put_call IS NULL OR h.put_call = '')
+              AND h.value_thousands > 0
+              AND f.id = (
+                  SELECT f2.id FROM filings f2
+                  WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
+                  ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
+              )
         )
         SELECT
             COALESCE(n.cusip, o.cusip)            AS cusip,
@@ -133,27 +151,33 @@ def conviction_scores(
     c = _conn(conn)
     return c.execute(
         """
-        WITH filer_aum AS (
-            SELECT f.cik, f.period_of_report, SUM(h.value_thousands) AS total_aum
-            FROM holdings h
-            JOIN filings f ON f.id = h.filing_id
+        WITH latest_filings AS (
+            SELECT f.id, f.cik FROM filings f
             WHERE f.period_of_report = ?
-              AND (h.put_call IS NULL OR h.put_call = '')
-            GROUP BY f.cik
+              AND f.id = (
+                  SELECT f2.id FROM filings f2
+                  WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
+                  ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
+              )
+        ),
+        filer_aum AS (
+            SELECT lf.cik, SUM(h.value_thousands) AS total_aum
+            FROM holdings h JOIN latest_filings lf ON lf.id = h.filing_id
+            WHERE (h.put_call IS NULL OR h.put_call = '') AND h.value_thousands > 0
+            GROUP BY lf.cik
         ),
         position_weights AS (
             SELECT
                 h.cusip,
                 h.name_of_issuer,
-                f.cik,
+                lf.cik,
                 h.value_thousands,
                 CAST(h.value_thousands AS REAL) / NULLIF(fa.total_aum, 0) * 100
                     AS portfolio_weight_pct
             FROM holdings h
-            JOIN filings   f  ON f.id = h.filing_id
-            JOIN filer_aum fa ON fa.cik = f.cik AND fa.period_of_report = f.period_of_report
-            WHERE f.period_of_report = ?
-              AND (h.put_call IS NULL OR h.put_call = '')
+            JOIN latest_filings lf ON lf.id = h.filing_id
+            JOIN filer_aum      fa ON fa.cik = lf.cik
+            WHERE (h.put_call IS NULL OR h.put_call = '') AND h.value_thousands > 0
         )
         SELECT
             cusip,
@@ -171,7 +195,7 @@ def conviction_scores(
         HAVING num_filers >= ?
         ORDER BY conviction_score DESC
         """,
-        (period, period, min_filers),
+        (period, min_filers),
     ).fetchall()
 
 
@@ -197,6 +221,12 @@ def filer_summary(
         JOIN filings f ON f.id = h.filing_id
         WHERE f.cik = ? AND f.period_of_report = ?
           AND (h.put_call IS NULL OR h.put_call = '')
+          AND h.value_thousands > 0
+          AND f.id = (
+              SELECT f2.id FROM filings f2
+              WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
+              ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
+          )
         """,
         (cik, period),
     ).fetchone()

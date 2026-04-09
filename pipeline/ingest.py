@@ -122,6 +122,13 @@ def ingest_filer(
             print("    [SKIP] no holdings parsed")
             continue
 
+        # SEC rule change: filings for periods ending >= 2022-12-31 report
+        # <value> in raw dollars, not thousands. Normalize back to thousands.
+        if period >= "2022-12-31" and xml_url.lower().endswith(".xml"):
+            for h in holdings:
+                if h.get("value_thousands") is not None:
+                    h["value_thousands"] = h["value_thousands"] // 1000
+
         print(f"    Parsed {len(holdings)} holdings")
 
         # Persist
