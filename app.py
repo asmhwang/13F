@@ -770,6 +770,13 @@ if "search_results" not in st.session_state:
 if "search_query" not in st.session_state:
     st.session_state.search_query = ""
 
+# If a filer was just added, clear the search input before the widget renders
+if st.session_state.get("_clear_search"):
+    st.session_state["filer_search_input"] = ""
+    st.session_state.search_query = ""
+    st.session_state.search_results = []
+    st.session_state["_clear_search"] = False
+
 filers_df = load_filers()
 periods   = load_periods()
 
@@ -904,9 +911,7 @@ with st.sidebar:
 
     if st.button(add_label, disabled=add_disabled, use_container_width=True):
         _start_ingest(selected_new_filer["cik"], selected_new_filer["name"])
-        st.session_state.search_query = ""
-        st.session_state.search_results = []
-        st.session_state["filer_search_input"] = ""
+        st.session_state["_clear_search"] = True
         st.rerun()
 
     # Show active / recent ingest jobs
