@@ -54,7 +54,7 @@ def test_search_respects_max_results():
 
     hits = [
         {"_source": {"entity_name": f"Fund {i}", "file_num": f"028-{i:05d}"}}
-        for i in range(10)
+        for i in range(1, 11)
     ]
     mock_response = MagicMock()
     mock_response.json.return_value = {"hits": {"hits": hits}}
@@ -64,3 +64,27 @@ def test_search_respects_max_results():
         results = search_filers_by_name("fund", max_results=3)
 
     assert len(results) == 3
+
+
+def test_search_skips_entries_with_missing_cik():
+    """Entries with empty or missing file_num are skipped."""
+    from pipeline.edgar import search_filers_by_name
+
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "hits": {
+            "hits": [
+                {"_source": {"entity_name": "Valid Fund", "file_num": "028-00099"}},
+                {"_source": {"entity_name": "No CIK Fund", "file_num": ""}},
+                {"_source": {"entity_name": "Missing file_num Fund"}},
+            ]
+        }
+    }
+    mock_response.raise_for_status = MagicMock()
+
+    with patch("pipeline.edgar._http_get", return_value=mock_response):
+        results = search_filers_by_name("fund")
+
+    assert len(results) == 1
+    assert results[0]["name"] == "Valid Fund"
+    assert results[0]["cik"] == "99"

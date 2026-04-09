@@ -319,7 +319,6 @@ def search_filers_by_name(query: str, max_results: int = 20) -> list[dict[str, A
         resp = _http_get(
             f"{_EFTS_BASE}/LATEST/search-index",
             params=params,
-            timeout=10,
         )
         resp.raise_for_status()
     except Exception:
@@ -329,10 +328,11 @@ def search_filers_by_name(query: str, max_results: int = 20) -> list[dict[str, A
     for hit in resp.json().get("hits", {}).get("hits", [])[:max_results]:
         src = hit.get("_source", {})
         raw_file_num = src.get("file_num", "")
-        cik = raw_file_num.replace("028-", "").lstrip("0") or "0"
+        cik = raw_file_num.replace("028-", "").lstrip("0")
         name = src.get("entity_name", "")
-        if cik and name:
-            results.append({"cik": cik, "name": name})
+        if not cik or not name:
+            continue
+        results.append({"cik": cik, "name": name})
 
     return results
 
