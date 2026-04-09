@@ -18,6 +18,11 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent))
 from pipeline.database import DB_PATH, get_connection
+from pipeline.edgar import search_filers_by_name
+
+# Thread-safe job store for background ingest operations
+_ingest_jobs: dict[str, dict] = {}
+_ingest_lock = threading.Lock()
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Page config
@@ -561,27 +566,34 @@ def _run_ingest(cik: str, filer_name: str) -> None:
     from pipeline.ingest import ingest_filer
     from pipeline.cusip import update_securities
 
-    job = st.session_state.ingest_jobs[cik]
     try:
-        job["message"] = "Fetching filings from EDGAR..."
+        with _ingest_lock:
+            _ingest_jobs[cik]["message"] = "Fetching filings from EDGAR..."
         ingest_filer(cik, latest_only=False)
-        job["message"] = "Resolving CUSIPs..."
+        with _ingest_lock:
+            _ingest_jobs[cik]["message"] = "Resolving CUSIPs..."
         update_securities(quiet=True)
         st.cache_data.clear()
-        job["status"] = "done"
-        job["message"] = "Complete."
+        with _ingest_lock:
+            _ingest_jobs[cik]["status"] = "done"
+            _ingest_jobs[cik]["message"] = "Complete."
     except Exception as exc:
-        job["status"] = "error"
-        job["message"] = str(exc)
+        with _ingest_lock:
+            _ingest_jobs[cik]["status"] = "error"
+            _ingest_jobs[cik]["message"] = str(exc)
 
 
 def _start_ingest(cik: str, filer_name: str) -> None:
     """Register the ingest job and launch the background thread."""
-    st.session_state.ingest_jobs[cik] = {
-        "status": "ingesting",
-        "filer_name": filer_name,
-        "message": "Starting...",
-    }
+    # Guard against double-launch
+    with _ingest_lock:
+        if cik in _ingest_jobs and _ingest_jobs[cik]["status"] == "ingesting":
+            return
+        _ingest_jobs[cik] = {
+            "status": "ingesting",
+            "filer_name": filer_name,
+            "message": "Starting...",
+        }
     t = threading.Thread(target=_run_ingest, args=(cik, filer_name), daemon=True)
     t.start()
 
@@ -728,9 +740,6 @@ def load_conviction_scores(period: str, min_filers: int) -> pd.DataFrame:
 
 inject_css()
 
-# Ingest job tracking: {cik: {"status": "ingesting"|"done"|"error", "filer_name": str, "message": str}}
-if "ingest_jobs" not in st.session_state:
-    st.session_state.ingest_jobs = {}
 if "search_results" not in st.session_state:
     st.session_state.search_results = []
 if "search_query" not in st.session_state:
@@ -739,12 +748,9 @@ if "search_query" not in st.session_state:
 filers_df = load_filers()
 periods   = load_periods()
 
-# Auto-rerun every 3s while any ingest job is running so the sidebar stays current
-if any(j["status"] == "ingesting" for j in st.session_state.get("ingest_jobs", {}).values()):
-    import time as _time
-    _time.sleep(3)
-    st.cache_data.clear()
-    st.rerun()
+# Auto-rerun while any ingest job is running (re-check on each page interaction)
+with _ingest_lock:
+    _has_active_jobs = any(j["status"] == "ingesting" for j in _ingest_jobs.values())
 
 if filers_df.empty:
     st.warning("No data found. Run `python -m pipeline.ingest --seed --latest-only` first.")
@@ -822,45 +828,54 @@ with st.sidebar:
     if search_query != st.session_state.search_query:
         st.session_state.search_query = search_query
         if len(search_query.strip()) >= 3:
-            from pipeline.edgar import search_filers_by_name
             st.session_state.search_results = search_filers_by_name(search_query.strip())
         else:
             st.session_state.search_results = []
 
     selected_new_filer = None
     if st.session_state.search_results:
-        result_labels = {r["name"]: r["cik"] for r in st.session_state.search_results}
-        chosen_name = st.selectbox(
+        # Disambiguate duplicate names by appending CIK
+        name_counts: dict[str, int] = {}
+        for r in st.session_state.search_results:
+            name_counts[r["name"]] = name_counts.get(r["name"], 0) + 1
+        options = []
+        for r in st.session_state.search_results:
+            label = r["name"] if name_counts[r["name"]] == 1 else f"{r['name']} (CIK {r['cik']})"
+            options.append({"label": label, "cik": r["cik"], "name": r["name"]})
+        label_to_option = {o["label"]: o for o in options}
+        chosen_label = st.selectbox(
             "Results",
-            list(result_labels.keys()),
+            list(label_to_option.keys()),
             label_visibility="collapsed",
         )
-        selected_new_filer = {"cik": result_labels[chosen_name], "name": chosen_name}
+        opt = label_to_option[chosen_label]
+        selected_new_filer = {"cik": opt["cik"], "name": opt["name"]}
     elif len(search_query.strip()) >= 3:
         st.caption("No results found.")
 
     # Determine button disabled state
-    conn = db_conn()
-    tracked_ciks = {r[0] for r in conn.execute("SELECT cik FROM filers").fetchall()}
+    tracked_ciks = set(load_filers()["cik"].tolist())
     already_tracked = selected_new_filer is not None and selected_new_filer["cik"] in tracked_ciks
     already_ingesting = (
         selected_new_filer is not None
-        and selected_new_filer["cik"] in st.session_state.ingest_jobs
-        and st.session_state.ingest_jobs[selected_new_filer["cik"]]["status"] == "ingesting"
+        and selected_new_filer["cik"] in _ingest_jobs
+        and _ingest_jobs[selected_new_filer["cik"]]["status"] == "ingesting"
     )
 
     add_disabled = selected_new_filer is None or already_tracked or already_ingesting
     add_label = "Already tracked" if already_tracked else ("Ingesting..." if already_ingesting else "+ Add & Ingest Full History")
 
     if st.button(add_label, disabled=add_disabled, use_container_width=True):
-        _start_ingest(selected_new_filer["cik"], selected_new_filer["name"])  # placeholder
+        _start_ingest(selected_new_filer["cik"], selected_new_filer["name"])
         st.session_state.search_query = ""
         st.session_state.search_results = []
         st.rerun()
 
     # Show active / recent ingest jobs
     to_remove = []
-    for cik, job in list(st.session_state.ingest_jobs.items()):
+    with _ingest_lock:
+        jobs_snapshot = dict(_ingest_jobs)
+    for cik, job in jobs_snapshot.items():
         status = job["status"]
         name = job["filer_name"]
         if status == "ingesting":
@@ -871,8 +886,9 @@ with st.sidebar:
         elif status == "error":
             st.error(f"✗ **{name}** failed: {job['message']}", icon=None)
             to_remove.append(cik)
-    for cik in to_remove:
-        del st.session_state.ingest_jobs[cik]
+    with _ingest_lock:
+        for cik in to_remove:
+            _ingest_jobs.pop(cik, None)
 
     _log_path = Path(__file__).parent / "data" / "refresh.log"
     if _log_path.exists():
