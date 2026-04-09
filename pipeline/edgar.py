@@ -303,37 +303,68 @@ def search_filers_by_name(query: str, max_results: int = 20) -> list[dict[str, A
     """
     Search EDGAR for 13F-HR filers by institution name.
 
+    Uses the EDGAR company search endpoint which filters by company name
+    (not full-text document content).
+
     Returns list of {cik, name} dicts. Returns [] if query is under 3 chars
     or on network error.
     """
     if len(query.strip()) < 3:
         return []
 
-    params = {
-        "q": f'"{query}"',
-        "forms": "13F-HR",
-        "hits.hits._source": "entity_name,file_num",
-        "hits.hits.total.value": "true",
-    }
     try:
         resp = _http_get(
-            f"{_EFTS_BASE}/LATEST/search-index",
-            params=params,
+            f"{_BASE}/cgi-bin/browse-edgar",
+            params={
+                "company":     query.strip(),
+                "CIK":         "",
+                "type":        "13F-HR",
+                "dateb":       "",
+                "owner":       "include",
+                "count":       str(max_results),
+                "search_text": "",
+                "action":      "getcompany",
+            },
         )
     except Exception:
         return []
 
-    results = []
-    for hit in resp.json().get("hits", {}).get("hits", [])[:max_results]:
-        src = hit.get("_source", {})
-        raw_file_num = src.get("file_num", "")
-        cik = raw_file_num.replace("028-", "").lstrip("0")
-        name = src.get("entity_name", "")
-        if not cik or not name:
-            continue
-        results.append({"cik": cik, "name": name})
+    # EDGAR returns two possible HTML layouts:
+    #
+    # A) Multiple results — an HTML table. Each row:
+    #    <td><a href="...CIK=0001234567&...">0001234567</a></td>
+    #    <td scope="row">Company Name</td>
+    #
+    # B) Single exact match — company profile page (no table). Contains:
+    #    <span class="companyName">COMPANY NAME <acronym ...>CIK</acronym>#:
+    #    <a href="...CIK=0001234567&...">0001234567 (see all...)</a>
 
-    return results
+    results = []
+
+    # Case A: multi-result table
+    for cik_raw, name_raw in re.findall(
+        r'CIK=(\d+)[^>]*>[^<]*</a></td>\s*<td[^>]*>([^<]+)</td>',
+        resp.text,
+    ):
+        cik = cik_raw.lstrip("0") or "0"
+        name = name_raw.strip().replace("&amp;", "&")
+        if cik and cik != "0" and name:
+            results.append({"cik": cik, "name": name})
+
+    # Case B: single-company profile page
+    if not results:
+        m = re.search(
+            r'class="companyName">([^<]+?)\s*<acronym[^>]*>CIK'
+            r'[^#]*#[^<]*<a[^>]*CIK=(\d+)',
+            resp.text,
+        )
+        if m:
+            name = m.group(1).strip().replace("&amp;", "&")
+            cik = m.group(2).lstrip("0") or "0"
+            if cik and cik != "0" and name:
+                results.append({"cik": cik, "name": name})
+
+    return results[:max_results]
 
 
 # ---------------------------------------------------------------------------
