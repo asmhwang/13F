@@ -7,6 +7,8 @@ A pipeline and dashboard for ingesting, normalizing, and analyzing SEC 13F-HR fi
 - Handles amendments (13F-HR/A) correctly — always uses the latest amended filing per period
 - Normalizes the SEC's Q4 2022 unit change (value field switched from thousands to raw dollars)
 - Resolves CUSIPs to tickers/names via OpenFIGI
+- 31 pre-configured seed filers across activist, long/short, growth, value, macro, and large asset manager categories
+- Search and add any EDGAR 13F filer (~6,000 institutions) directly from the dashboard — full history ingested in the background
 - Streamlit dashboard with single-filer deep-dives, cross-filer comparison, and conviction scoring
 
 ---
@@ -36,13 +38,15 @@ pip3 install -r requirements.txt
 │   ├── 13f.db           # SQLite database (created on first run)
 │   ├── refresh.log      # Log output from refresh runs
 │   └── http_cache/      # Disk cache for EDGAR HTTP responses
-└── pipeline/
-    ├── database.py      # Schema + DB helpers
-    ├── edgar.py         # SEC EDGAR API client + seed filer list
-    ├── parser.py        # 13F filing parser (XML + legacy text formats)
-    ├── ingest.py        # CLI ingestion script
-    ├── cusip.py         # CUSIP → ticker resolver (OpenFIGI)
-    └── queries.py       # Analytical queries (conviction scores, QoQ changes, etc.)
+├── pipeline/
+│   ├── database.py      # Schema + DB helpers
+│   ├── edgar.py         # SEC EDGAR API client, filer search, seed filer list
+│   ├── parser.py        # 13F filing parser (XML + legacy text formats)
+│   ├── ingest.py        # CLI ingestion script
+│   ├── cusip.py         # CUSIP → ticker resolver (OpenFIGI)
+│   └── queries.py       # Analytical queries (conviction scores, QoQ changes, etc.)
+└── tests/
+    └── test_edgar_search.py  # Unit tests for EDGAR filer search
 ```
 
 ---
@@ -51,7 +55,7 @@ pip3 install -r requirements.txt
 
 All commands are run from the repo root.
 
-**Quickstart — ingest the 10 seed institutions, latest quarter only:**
+**Quickstart — ingest the 31 seed institutions, latest quarter only:**
 
 ```bash
 python3 -m pipeline.ingest --seed --latest-only
@@ -79,7 +83,7 @@ python3 -m pipeline.ingest --cik 0001067983 --since 2022-01-01
 
 | Flag | Description |
 |---|---|
-| `--seed` | Ingest all 10 pre-configured seed filers |
+| `--seed` | Ingest all 31 pre-configured seed filers |
 | `--cik <CIK>` | Ingest a single filer by SEC CIK |
 | `--latest-only` | Only fetch the most recent filing per filer |
 | `--since <YYYY-MM-DD>` | Skip filings filed before this date |
@@ -88,17 +92,19 @@ python3 -m pipeline.ingest --cik 0001067983 --since 2022-01-01
 
 Filings already in the database are skipped automatically. HTTP responses are cached to `data/http_cache/` — re-runs that hit only the cache complete in a few seconds regardless of history size.
 
-**Seed filers** (pre-configured in `pipeline/edgar.py`):
-- Berkshire Hathaway
-- Pershing Square Capital Management
-- Renaissance Technologies
-- Bridgewater Associates
-- Bill & Melinda Gates Foundation Trust
-- Appaloosa Management
-- Tiger Global Management
-- Coatue Management
-- Viking Global Investors
-- Lone Pine Capital
+**Seed filers** (31 pre-configured in `pipeline/edgar.py`):
+
+| Category | Filers |
+|---|---|
+| Legacy | Berkshire Hathaway, Pershing Square, Renaissance Technologies, Bridgewater Associates, Gates Foundation Trust, Appaloosa Management, Tiger Global, Coatue Management, Viking Global, Lone Pine Capital |
+| Activist | Elliott Investment Management, Starboard Value, ValueAct Capital, Third Point |
+| Long/Short | D.E. Shaw, Two Sigma Investments, Citadel Advisors, Point72 Asset Management, Baupost Group |
+| Growth | ARK Investment Management, Baillie Gifford, Ruane Cunniff & Goldfarb |
+| Value | Tweedy Browne, Greenlight Capital |
+| Macro / Family Office | Duquesne Family Office |
+| Large Asset Managers | BlackRock Advisors, Vanguard Group, FMR LLC (Fidelity), T. Rowe Price Associates, Franklin Resources, Capital Research Global Investors |
+
+**Adding filers from the dashboard:** Use the "Add New Filer" search box in the sidebar to find and add any of the ~6,000 EDGAR 13F filers by name. Full filing history is ingested in the background — the UI stays responsive and updates automatically when complete.
 
 > **Note on amendments:** When a filer files a 13F-HR/A amendment, only the most recently filed version for that period is used. All queries automatically deduplicate amendments.
 
