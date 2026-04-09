@@ -320,7 +320,6 @@ def search_filers_by_name(query: str, max_results: int = 20) -> list[dict[str, A
             f"{_EFTS_BASE}/LATEST/search-index",
             params=params,
         )
-        resp.raise_for_status()
     except Exception:
         return []
 

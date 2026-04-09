@@ -748,9 +748,13 @@ if "search_query" not in st.session_state:
 filers_df = load_filers()
 periods   = load_periods()
 
-# Auto-rerun while any ingest job is running (re-check on each page interaction)
+# Auto-rerun every 3s while any ingest job is running to keep sidebar status fresh
 with _ingest_lock:
     _has_active_jobs = any(j["status"] == "ingesting" for j in _ingest_jobs.values())
+if _has_active_jobs:
+    import time as _time
+    _time.sleep(3)
+    st.rerun()
 
 if filers_df.empty:
     st.warning("No data found. Run `python -m pipeline.ingest --seed --latest-only` first.")
@@ -854,7 +858,7 @@ with st.sidebar:
         st.caption("No results found.")
 
     # Determine button disabled state
-    tracked_ciks = set(load_filers()["cik"].tolist())
+    tracked_ciks = set(filers_df["cik"].tolist())
     already_tracked = selected_new_filer is not None and selected_new_filer["cik"] in tracked_ciks
     already_ingesting = (
         selected_new_filer is not None
