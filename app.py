@@ -24,6 +24,10 @@ from pipeline.edgar import search_filers_by_name
 _ingest_jobs: dict[str, dict] = {}
 _ingest_lock = threading.Lock()
 
+# Thread-safe status for background refresh
+_refresh_status: dict = {"running": False, "done": False, "error": None}
+_refresh_lock = threading.Lock()
+
 # ────────────────────────────────────────────────────────────────────────────────
 # Page config
 # ────────────────────────────────────────────────────────────────────────────────
@@ -598,6 +602,29 @@ def _start_ingest(cik: str, filer_name: str) -> None:
     t.start()
 
 
+def _run_refresh() -> None:
+    """Background thread: run refresh.sh and update _refresh_status."""
+    global _refresh_status
+    script = Path(__file__).parent / "refresh.sh"
+    try:
+        result = subprocess.run(
+            ["bash", str(script)], capture_output=True, text=True
+        )
+        st.cache_data.clear()
+        with _refresh_lock:
+            if result.returncode == 0:
+                _refresh_status = {"running": False, "done": True, "error": None}
+            else:
+                _refresh_status = {
+                    "running": False,
+                    "done": False,
+                    "error": result.stderr or result.stdout or "Unknown error",
+                }
+    except Exception as exc:
+        with _refresh_lock:
+            _refresh_status = {"running": False, "done": False, "error": str(exc)}
+
+
 @st.cache_data(ttl=300)
 def load_filers():
     conn = db_conn()
@@ -748,10 +775,12 @@ if "search_query" not in st.session_state:
 filers_df = load_filers()
 periods   = load_periods()
 
-# Auto-rerun every 3s while any ingest job is running to keep sidebar status fresh
+# Auto-rerun every 3s while any background job is running
 with _ingest_lock:
     _has_active_jobs = any(j["status"] == "ingesting" for j in _ingest_jobs.values())
-if _has_active_jobs:
+with _refresh_lock:
+    _refresh_running = _refresh_status["running"]
+if _has_active_jobs or _refresh_running:
     import time as _time
     _time.sleep(3)
     st.rerun()
@@ -803,20 +832,25 @@ with st.sidebar:
 
     st.markdown('<div class="sb-sec">Data</div>', unsafe_allow_html=True)
 
-    _refresh_script = Path(__file__).parent / "refresh.sh"
-    if st.button("Refresh data", help="Ingest latest filings + resolve new CUSIPs"):
-        with st.spinner("Refreshing…"):
-            result = subprocess.run(
-                ["bash", str(_refresh_script)],
-                capture_output=True, text=True,
-            )
-        if result.returncode == 0:
-            st.success("Refresh complete.")
-            st.cache_data.clear()
+    with _refresh_lock:
+        _rs = dict(_refresh_status)
+
+    if _rs["running"]:
+        st.info("Refreshing data in background…")
+    else:
+        if st.button("Refresh data", help="Ingest latest filings + resolve new CUSIPs"):
+            with _refresh_lock:
+                _refresh_status.update({"running": True, "done": False, "error": None})
+            threading.Thread(target=_run_refresh, daemon=True).start()
             st.rerun()
-        else:
-            st.error("Refresh failed.")
-            st.code(result.stderr or result.stdout)
+        if _rs["done"]:
+            st.success("Refresh complete.")
+            with _refresh_lock:
+                _refresh_status["done"] = False
+        elif _rs["error"]:
+            st.error(f"Refresh failed: {_rs['error']}")
+            with _refresh_lock:
+                _refresh_status["error"] = None
 
     st.markdown('<div class="sb-sec">Add New Filer</div>', unsafe_allow_html=True)
 
@@ -873,6 +907,7 @@ with st.sidebar:
         _start_ingest(selected_new_filer["cik"], selected_new_filer["name"])
         st.session_state.search_query = ""
         st.session_state.search_results = []
+        st.session_state["filer_search_input"] = ""
         st.rerun()
 
     # Show active / recent ingest jobs
