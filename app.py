@@ -7,6 +7,7 @@ Run with:
 
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pandas as pd
@@ -555,6 +556,36 @@ def db_conn():
     return get_connection()
 
 
+def _run_ingest(cik: str, filer_name: str) -> None:
+    """Background thread: ingest full history for a filer, then resolve CUSIPs."""
+    from pipeline.ingest import ingest_filer
+    from pipeline.cusip import update_securities
+
+    job = st.session_state.ingest_jobs[cik]
+    try:
+        job["message"] = "Fetching filings from EDGAR..."
+        ingest_filer(cik, latest_only=False)
+        job["message"] = "Resolving CUSIPs..."
+        update_securities(quiet=True)
+        st.cache_data.clear()
+        job["status"] = "done"
+        job["message"] = "Complete."
+    except Exception as exc:
+        job["status"] = "error"
+        job["message"] = str(exc)
+
+
+def _start_ingest(cik: str, filer_name: str) -> None:
+    """Register the ingest job and launch the background thread."""
+    st.session_state.ingest_jobs[cik] = {
+        "status": "ingesting",
+        "filer_name": filer_name,
+        "message": "Starting...",
+    }
+    t = threading.Thread(target=_run_ingest, args=(cik, filer_name), daemon=True)
+    t.start()
+
+
 @st.cache_data(ttl=300)
 def load_filers():
     conn = db_conn()
@@ -707,6 +738,13 @@ if "search_query" not in st.session_state:
 
 filers_df = load_filers()
 periods   = load_periods()
+
+# Auto-rerun every 3s while any ingest job is running so the sidebar stays current
+if any(j["status"] == "ingesting" for j in st.session_state.get("ingest_jobs", {}).values()):
+    import time as _time
+    _time.sleep(3)
+    st.cache_data.clear()
+    st.rerun()
 
 if filers_df.empty:
     st.warning("No data found. Run `python -m pipeline.ingest --seed --latest-only` first.")
