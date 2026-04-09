@@ -697,6 +697,14 @@ def load_conviction_scores(period: str, min_filers: int) -> pd.DataFrame:
 
 inject_css()
 
+# Ingest job tracking: {cik: {"status": "ingesting"|"done"|"error", "filer_name": str, "message": str}}
+if "ingest_jobs" not in st.session_state:
+    st.session_state.ingest_jobs = {}
+if "search_results" not in st.session_state:
+    st.session_state.search_results = []
+if "search_query" not in st.session_state:
+    st.session_state.search_query = ""
+
 filers_df = load_filers()
 periods   = load_periods()
 
@@ -761,6 +769,72 @@ with st.sidebar:
         else:
             st.error("Refresh failed.")
             st.code(result.stderr or result.stdout)
+
+    st.markdown('<div class="sb-sec">Add New Filer</div>', unsafe_allow_html=True)
+
+    search_query = st.text_input(
+        "Search by name",
+        value=st.session_state.search_query,
+        placeholder="e.g. Ackman, Tiger, Baupost...",
+        label_visibility="collapsed",
+        key="filer_search_input",
+    )
+
+    # Fire EDGAR search when query changes and is long enough
+    if search_query != st.session_state.search_query:
+        st.session_state.search_query = search_query
+        if len(search_query.strip()) >= 3:
+            from pipeline.edgar import search_filers_by_name
+            st.session_state.search_results = search_filers_by_name(search_query.strip())
+        else:
+            st.session_state.search_results = []
+
+    selected_new_filer = None
+    if st.session_state.search_results:
+        result_labels = {r["name"]: r["cik"] for r in st.session_state.search_results}
+        chosen_name = st.selectbox(
+            "Results",
+            list(result_labels.keys()),
+            label_visibility="collapsed",
+        )
+        selected_new_filer = {"cik": result_labels[chosen_name], "name": chosen_name}
+    elif len(search_query.strip()) >= 3:
+        st.caption("No results found.")
+
+    # Determine button disabled state
+    conn = db_conn()
+    tracked_ciks = {r[0] for r in conn.execute("SELECT cik FROM filers").fetchall()}
+    already_tracked = selected_new_filer is not None and selected_new_filer["cik"] in tracked_ciks
+    already_ingesting = (
+        selected_new_filer is not None
+        and selected_new_filer["cik"] in st.session_state.ingest_jobs
+        and st.session_state.ingest_jobs[selected_new_filer["cik"]]["status"] == "ingesting"
+    )
+
+    add_disabled = selected_new_filer is None or already_tracked or already_ingesting
+    add_label = "Already tracked" if already_tracked else ("Ingesting..." if already_ingesting else "+ Add & Ingest Full History")
+
+    if st.button(add_label, disabled=add_disabled, use_container_width=True):
+        _start_ingest(selected_new_filer["cik"], selected_new_filer["name"])  # placeholder
+        st.session_state.search_query = ""
+        st.session_state.search_results = []
+        st.rerun()
+
+    # Show active / recent ingest jobs
+    to_remove = []
+    for cik, job in list(st.session_state.ingest_jobs.items()):
+        status = job["status"]
+        name = job["filer_name"]
+        if status == "ingesting":
+            st.info(f"⏳ Ingesting **{name}**...\n\n{job['message']}", icon=None)
+        elif status == "done":
+            st.success(f"✓ **{name}** added successfully.", icon=None)
+            to_remove.append(cik)
+        elif status == "error":
+            st.error(f"✗ **{name}** failed: {job['message']}", icon=None)
+            to_remove.append(cik)
+    for cik in to_remove:
+        del st.session_state.ingest_jobs[cik]
 
     _log_path = Path(__file__).parent / "data" / "refresh.log"
     if _log_path.exists():
