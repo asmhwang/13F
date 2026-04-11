@@ -181,6 +181,8 @@ def _data_lines(text: str) -> tuple[list[str], str]:
     """
     Extract holding data lines from the <TABLE> block in an SGML text filing.
     Starts collecting after the <S> marker row to skip <CAPTION> headers.
+    Falls back to all non-tag lines when no <S> marker is present (some older
+    filings use only <C> column markers without a <S> data-start marker).
 
     Returns (lines, fmt) where fmt is 'A_or_B' or 'C'.
     """
@@ -194,17 +196,30 @@ def _data_lines(text: str) -> tuple[list[str], str]:
         fmt = "A_or_B" if is_ab else "C"
         lines: list[str] = []
         in_data = False
+        found_s = False
+        all_nontaglines: list[str] = []
         for line in block.splitlines():
             s = line.rstrip()
             if not s:
                 continue
             if s.lstrip().upper().startswith("<S>"):
                 in_data = True
+                found_s = True
                 continue
             if s.lstrip().startswith("<"):
                 continue
+            all_nontaglines.append(s)
             if in_data:
                 lines.append(s)
+        # Some older filings omit <S> — fall back to non-tag lines but only
+        # from the first actual data line onward to skip caption/header rows.
+        if not found_s:
+            first_data = next(
+                (i for i, ln in enumerate(all_nontaglines)
+                 if _DATA_LINE_RE.match(ln) or _DATA_LINE_C_RE.match(ln)),
+                None,
+            )
+            lines = all_nontaglines[first_data:] if first_data is not None else []
         return lines, fmt
     return [], "A_or_B"
 

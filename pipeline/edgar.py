@@ -389,7 +389,7 @@ SEED_FILERS = [
     ("0001351069", "ValueAct Capital"),
     ("0001040273", "Third Point"),
     # ── Long / Short Equity ──────────────────────────────────────────────
-    ("0001009268", "D.E. Shaw"),
+    ("0001009207", "D.E. Shaw"),
     ("0001179392", "Two Sigma Investments"),
     ("0001423053", "Citadel Advisors"),
     ("0001603466", "Point72 Asset Management"),
