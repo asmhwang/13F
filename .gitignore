@@ -1,9 +1,8 @@
 # Secrets
 .env
 
-# Regeneratable data (cache, logs) — DB tracked via LFS
-data/http_cache/
-data/*.log
+# Regeneratable / local data
+data/
 
 # Python
 __pycache__/
