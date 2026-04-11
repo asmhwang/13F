@@ -17,11 +17,19 @@ A pipeline and dashboard for ingesting, normalizing, and analyzing SEC 13F-HR fi
 
 **Requirements:** Python 3.11+
 
-Install dependencies:
+**macOS / Linux:**
 
 ```bash
 pip3 install -r requirements.txt
 ```
+
+**Windows:**
+
+```bat
+pip install -r requirements.txt
+```
+
+> On Windows, use `python` instead of `python3` in all commands below.
 
 ---
 
@@ -169,18 +177,27 @@ All views filter out options (puts/calls), zero-value rows, and duplicate amendm
 
 13F filings are published quarterly (~45 days after each quarter end). Run the refresh script to pull the latest filings and resolve any new CUSIPs:
 
+**macOS / Linux:**
 ```bash
 bash refresh.sh
 ```
 
+**Windows:**
+```bat
+refresh.bat
+```
+
 Output is logged to `data/refresh.log`. Already-ingested filings and already-resolved CUSIPs are skipped, so the script completes in seconds when nothing is new.
 
-**Automatic weekly refresh (cron):**
+**Automatic weekly refresh:**
 
+macOS / Linux (cron):
 ```bash
 # Runs every Monday at 7am — add to crontab with: crontab -e
 0 7 * * 1 /path/to/13F/refresh.sh
 ```
+
+Windows (Task Scheduler): open Task Scheduler, create a Basic Task, set trigger to Weekly on Monday, and set the action to run `refresh.bat` in the repo directory.
 
 A **Refresh Data** button in the dashboard sidebar runs the same script on demand and reloads the UI when complete.
 

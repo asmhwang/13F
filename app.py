@@ -602,12 +602,19 @@ def _start_ingest(cik: str, filer_name: str) -> None:
 
 
 def _run_refresh() -> None:
-    """Background thread: run refresh.sh and update _refresh_status."""
+    """Background thread: run refresh.sh (or refresh.bat on Windows) and update _refresh_status."""
     global _refresh_status
-    script = Path(__file__).parent / "refresh.sh"
+    import sys
+    repo = Path(__file__).parent
+    if sys.platform == "win32":
+        script = repo / "refresh.bat"
+        cmd = ["cmd", "/c", str(script)]
+    else:
+        script = repo / "refresh.sh"
+        cmd = ["bash", str(script)]
     try:
         result = subprocess.run(
-            ["bash", str(script)], capture_output=True, text=True
+            cmd, capture_output=True, text=True
         )
         with _refresh_lock:
             if result.returncode == 0:
