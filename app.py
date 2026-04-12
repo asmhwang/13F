@@ -651,6 +651,7 @@ def load_holdings(cik: str, period: str) -> pd.DataFrame:
     return pd.read_sql(
         """
         SELECT h.cusip, COALESCE(s.ticker, h.name_of_issuer) AS ticker,
+               s.ticker                              AS raw_ticker,
                COALESCE(s.name, h.name_of_issuer)   AS name_of_issuer,
                h.title_of_class,
                SUM(h.value_thousands) AS value_thousands,
@@ -666,8 +667,8 @@ def load_holdings(cik: str, period: str) -> pd.DataFrame:
               WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
               ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
           )
-        GROUP BY h.cusip, h.put_call, ticker, name_of_issuer, h.title_of_class,
-                 h.investment_discretion
+        GROUP BY h.cusip, h.put_call, ticker, raw_ticker, name_of_issuer,
+                 h.title_of_class, h.investment_discretion
         ORDER BY value_thousands DESC
         """,
         conn, params=(cik, period),
@@ -1096,10 +1097,11 @@ if view == "Single Filer":
     display = equity.copy()
     display["value_millions"] = (display["value_thousands"] / 1_000).round(2)
     display["weight_%"]       = (display["value_thousands"] / total_aum * 100).round(2)
+    display["ticker_label"]   = display["raw_ticker"].fillna("—")
     st.dataframe(
-        display[["ticker","name_of_issuer","cusip","title_of_class",
+        display[["ticker_label","name_of_issuer","cusip","title_of_class",
                  "value_millions","weight_%","shares"]].rename(columns={
-            "ticker":         "Ticker",
+            "ticker_label":   "Ticker",
             "name_of_issuer": "Issuer",
             "cusip":          "CUSIP",
             "title_of_class": "Class",
