@@ -652,8 +652,10 @@ def load_holdings(cik: str, period: str) -> pd.DataFrame:
         """
         SELECT h.cusip, COALESCE(s.ticker, h.cusip) AS ticker,
                COALESCE(s.name, h.name_of_issuer)   AS name_of_issuer,
-               h.title_of_class, h.value_thousands,
-               h.shares, h.put_call, h.investment_discretion
+               h.title_of_class,
+               SUM(h.value_thousands) AS value_thousands,
+               SUM(h.shares)          AS shares,
+               h.put_call, h.investment_discretion
         FROM holdings h
         JOIN filings f ON f.id = h.filing_id
         LEFT JOIN securities s ON s.cusip = h.cusip
@@ -664,7 +666,9 @@ def load_holdings(cik: str, period: str) -> pd.DataFrame:
               WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
               ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
           )
-        ORDER BY h.value_thousands DESC
+        GROUP BY h.cusip, h.put_call, ticker, name_of_issuer, h.title_of_class,
+                 h.investment_discretion
+        ORDER BY value_thousands DESC
         """,
         conn, params=(cik, period),
     )
@@ -678,7 +682,9 @@ def load_all_holdings(period: str) -> pd.DataFrame:
         SELECT f.cik, fi.name AS filer_name,
                h.cusip, COALESCE(s.ticker, h.cusip) AS ticker,
                COALESCE(s.name, h.name_of_issuer)   AS name_of_issuer,
-               h.value_thousands, h.shares, h.put_call
+               SUM(h.value_thousands) AS value_thousands,
+               SUM(h.shares)          AS shares,
+               h.put_call
         FROM holdings h
         JOIN filings f  ON f.id = h.filing_id
         JOIN filers fi  ON fi.cik = f.cik
@@ -690,7 +696,8 @@ def load_all_holdings(period: str) -> pd.DataFrame:
               WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
               ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
           )
-        ORDER BY h.value_thousands DESC
+        GROUP BY f.cik, fi.name, h.cusip, h.put_call, ticker, name_of_issuer
+        ORDER BY value_thousands DESC
         """,
         conn, params=(period,),
     )
