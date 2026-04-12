@@ -650,7 +650,7 @@ def load_holdings(cik: str, period: str) -> pd.DataFrame:
     conn = db_conn()
     return pd.read_sql(
         """
-        SELECT h.cusip, COALESCE(s.ticker, h.cusip) AS ticker,
+        SELECT h.cusip, COALESCE(s.ticker, h.name_of_issuer) AS ticker,
                COALESCE(s.name, h.name_of_issuer)   AS name_of_issuer,
                h.title_of_class,
                SUM(h.value_thousands) AS value_thousands,
@@ -680,7 +680,7 @@ def load_all_holdings(period: str) -> pd.DataFrame:
     return pd.read_sql(
         """
         SELECT f.cik, fi.name AS filer_name,
-               h.cusip, COALESCE(s.ticker, h.cusip) AS ticker,
+               h.cusip, COALESCE(s.ticker, h.name_of_issuer) AS ticker,
                COALESCE(s.name, h.name_of_issuer)   AS name_of_issuer,
                SUM(h.value_thousands) AS value_thousands,
                SUM(h.shares)          AS shares,
@@ -741,7 +741,7 @@ def load_conviction_scores(period: str, min_filers: int) -> pd.DataFrame:
             SELECT
                 h.cusip,
                 COALESCE(s.name, h.name_of_issuer) AS name_of_issuer,
-                COALESCE(s.ticker, h.cusip)         AS ticker,
+                COALESCE(s.ticker, h.name_of_issuer)         AS ticker,
                 lf.cik,
                 h.value_thousands,
                 CAST(h.value_thousands AS REAL) / NULLIF(fa.total_aum, 0) * 100
