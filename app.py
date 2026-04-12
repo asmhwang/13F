@@ -834,8 +834,9 @@ with st.sidebar:
 
         selected_period = st.selectbox("Period", filer_periods)
         compare_period  = None
-        if len(filer_periods) > 1:
-            compare_period = st.selectbox("Compare to (QoQ)", filer_periods[1:], index=0)
+        older_periods   = [p for p in filer_periods if p < selected_period]
+        if older_periods:
+            compare_period = st.selectbox("Compare to (QoQ)", older_periods, index=0)
     else:
         selected_period = st.selectbox("Period", periods)
 
@@ -1027,9 +1028,16 @@ if view == "Single Filer":
         old_eq = old_h[old_h["put_call"].isna() | (old_h["put_call"] == "")]
 
         merged = equity[["cusip","ticker","name_of_issuer","value_thousands"]].merge(
-            old_eq[["cusip","value_thousands"]].rename(columns={"value_thousands": "old_value"}),
+            old_eq[["cusip","ticker","name_of_issuer","value_thousands"]].rename(columns={
+                "value_thousands": "old_value",
+                "ticker":          "old_ticker",
+                "name_of_issuer":  "old_name",
+            }),
             on="cusip", how="outer",
         )
+        # Closed positions have no current ticker/name — fill from the prior period
+        merged["ticker"]        = merged["ticker"].fillna(merged["old_ticker"]).fillna(merged["cusip"])
+        merged["name_of_issuer"]= merged["name_of_issuer"].fillna(merged["old_name"]).fillna(merged["cusip"])
         merged["new_value"]  = merged["value_thousands"].fillna(0)
         merged["old_value"]  = merged["old_value"].fillna(0)
         merged["change"]     = merged["new_value"] - merged["old_value"]
