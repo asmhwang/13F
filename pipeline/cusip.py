@@ -132,10 +132,63 @@ def resolve_cusips(cusips: list[str]) -> dict[str, dict[str, str | None]]:
     return results
 
 
+_POLYGON_URL = "https://api.polygon.io/v3/reference/tickers"
+_POLYGON_RATE_SLEEP = 13.0   # free tier: 5 req/min → 12s apart; 13s to be safe
+
+
+def _polygon_api_key() -> str | None:
+    return os.environ.get("POLYGON_API_KEY") or None
+
+
+def resolve_cusips_polygon(cusips: list[str]) -> dict[str, dict[str, str | None]]:
+    """
+    Resolve CUSIPs via the Polygon.io reference tickers endpoint.
+    One request per CUSIP — rate-limited to 5/min on the free tier.
+    Returns a dict of cusip → {ticker, name, exchange} for matches.
+    """
+    key = _polygon_api_key()
+    if not key:
+        return {}
+
+    results: dict[str, dict[str, str | None]] = {}
+    for i, cusip in enumerate(cusips):
+        try:
+            resp = requests.get(
+                _POLYGON_URL,
+                params={"cusip": cusip, "apiKey": key},
+                timeout=15,
+            )
+            if resp.status_code == 429:
+                print("  [429] Polygon rate limit — sleeping 60s")
+                time.sleep(60)
+                resp = requests.get(
+                    _POLYGON_URL,
+                    params={"cusip": cusip, "apiKey": key},
+                    timeout=15,
+                )
+            resp.raise_for_status()
+            data = resp.json().get("results", [])
+            if data:
+                best = data[0]
+                results[cusip] = {
+                    "ticker":   best.get("ticker"),
+                    "name":     best.get("name"),
+                    "exchange": best.get("primary_exchange"),
+                }
+        except Exception as exc:
+            print(f"  [ERROR] Polygon {cusip}: {exc}")
+
+        if i < len(cusips) - 1:
+            time.sleep(_POLYGON_RATE_SLEEP)
+
+    return results
+
+
 def update_securities(db_path: Path = DB_PATH, quiet: bool = False) -> int:
     """
     Fetch all CUSIPs from the holdings table that don't have a ticker yet,
-    resolve them via OpenFIGI, and store results in the securities table.
+    resolve them via OpenFIGI then Polygon.io, and store results in the
+    securities table.
 
     Returns the number of CUSIPs newly mapped.
     """
@@ -227,14 +280,82 @@ def update_securities(db_path: Path = DB_PATH, quiet: bool = False) -> int:
             time.sleep(_rate_sleep())
 
     print(f"Done. {mapped}/{len(cusips)} CUSIPs resolved to tickers.")
-    return mapped
+
+    # ---- Polygon second pass ------------------------------------------------
+    if not _polygon_api_key():
+        print("Tip: set POLYGON_API_KEY for a second-pass resolver via Polygon.io")
+        return mapped
+
+    # Fetch still-unresolved CUSIPs, ordered by total holding value (most
+    # impactful first) and limited to the last 2 years of filings.
+    unresolved = conn.execute(
+        """
+        SELECT h.cusip, SUM(h.value_thousands) AS total_value
+        FROM holdings h
+        JOIN filings f ON f.id = h.filing_id
+        LEFT JOIN securities s ON s.cusip = h.cusip
+        WHERE s.ticker IS NULL
+          AND f.period_of_report >= date('now', '-2 years')
+        GROUP BY h.cusip
+        ORDER BY total_value DESC
+        """
+    ).fetchall()
+    poly_cusips = [r[0] for r in unresolved]
+
+    if not poly_cusips:
+        print("Polygon: nothing left to resolve.")
+        return mapped
+
+    eta_min = len(poly_cusips) * _POLYGON_RATE_SLEEP / 60
+    print(f"\nPolygon second pass: {len(poly_cusips)} unresolved CUSIPs  —  ETA ~{eta_min:.0f} min")
+
+    poly_mapped = 0
+    for i, cusip in enumerate(poly_cusips):
+        try:
+            resp = requests.get(
+                _POLYGON_URL,
+                params={"cusip": cusip, "apiKey": _polygon_api_key()},
+                timeout=15,
+            )
+            if resp.status_code == 429:
+                print("  [429] Polygon rate limit — sleeping 60s")
+                time.sleep(60)
+                resp = requests.get(
+                    _POLYGON_URL,
+                    params={"cusip": cusip, "apiKey": _polygon_api_key()},
+                    timeout=15,
+                )
+            resp.raise_for_status()
+            data = resp.json().get("results", [])
+            with get_connection(db_path) as wconn:
+                if data:
+                    best = data[0]
+                    upsert_security(
+                        wconn,
+                        cusip,
+                        ticker=best.get("ticker"),
+                        name=best.get("name"),
+                        exchange=best.get("primary_exchange"),
+                    )
+                    poly_mapped += 1
+                    if not quiet:
+                        print(f"  [{i+1}/{len(poly_cusips)}] {cusip} → {best.get('ticker')}")
+                # No result: leave existing NULL sentinel, skip re-storing
+        except Exception as exc:
+            print(f"  [ERROR] Polygon {cusip}: {exc}")
+
+        if i < len(poly_cusips) - 1:
+            time.sleep(_POLYGON_RATE_SLEEP)
+
+    print(f"Polygon done. {poly_mapped}/{len(poly_cusips)} additional CUSIPs resolved.")
+    return mapped + poly_mapped
 
 
 if __name__ == "__main__":
     import argparse, sys
     sys.path.insert(0, str(Path(__file__).parent.parent))
 
-    ap = argparse.ArgumentParser(description="Resolve CUSIPs to tickers via OpenFIGI")
+    ap = argparse.ArgumentParser(description="Resolve CUSIPs to tickers via OpenFIGI + Polygon")
     ap.add_argument("--db", default=str(DB_PATH), help="Path to SQLite database")
     args = ap.parse_args()
 
