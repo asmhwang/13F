@@ -39,8 +39,9 @@ def init_db(db_path: Path = DB_PATH) -> None:
                 ingested_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
-            CREATE INDEX IF NOT EXISTS idx_filings_cik        ON filings(cik);
-            CREATE INDEX IF NOT EXISTS idx_filings_period     ON filings(period_of_report);
+            CREATE INDEX IF NOT EXISTS idx_filings_cik           ON filings(cik);
+            CREATE INDEX IF NOT EXISTS idx_filings_period        ON filings(period_of_report);
+            CREATE INDEX IF NOT EXISTS idx_filings_cik_period    ON filings(cik, period_of_report);
 
             -- Individual equity positions inside a filing
             CREATE TABLE IF NOT EXISTS holdings (
@@ -74,6 +75,18 @@ def init_db(db_path: Path = DB_PATH) -> None:
             );
         """)
     print(f"Database initialised at {db_path}")
+
+
+def ensure_indexes(db_path: Path = DB_PATH) -> None:
+    """Idempotently create indexes on an existing database (silent, no schema changes)."""
+    conn = get_connection(db_path)
+    conn.executescript("""
+        CREATE INDEX IF NOT EXISTS idx_filings_cik           ON filings(cik);
+        CREATE INDEX IF NOT EXISTS idx_filings_period        ON filings(period_of_report);
+        CREATE INDEX IF NOT EXISTS idx_filings_cik_period    ON filings(cik, period_of_report);
+        CREATE INDEX IF NOT EXISTS idx_holdings_filing       ON holdings(filing_id);
+        CREATE INDEX IF NOT EXISTS idx_holdings_cusip        ON holdings(cusip);
+    """)
 
 
 # ---------------------------------------------------------------------------

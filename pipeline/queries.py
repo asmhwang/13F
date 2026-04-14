@@ -32,27 +32,30 @@ def top_holdings(
     c = _conn(conn)
     return c.execute(
         """
+        WITH latest_filings AS (
+            SELECT f.id, f.cik FROM filings f
+            WHERE f.period_of_report = ?
+              AND f.id = (
+                  SELECT f2.id FROM filings f2
+                  WHERE f2.cik = f.cik AND f2.period_of_report = ?
+                  ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
+              )
+        )
         SELECT
             h.cusip,
             MAX(h.name_of_issuer)                    AS name_of_issuer,
-            COUNT(DISTINCT f.cik)                    AS num_filers,
+            COUNT(DISTINCT lf.cik)                   AS num_filers,
             SUM(h.value_thousands)                   AS total_value_thousands,
             SUM(COALESCE(h.shares, 0))               AS total_shares
         FROM holdings h
-        JOIN filings f ON f.id = h.filing_id
-        WHERE f.period_of_report = ?
-          AND (h.put_call IS NULL OR h.put_call = '')
+        JOIN latest_filings lf ON lf.id = h.filing_id
+        WHERE (h.put_call IS NULL OR h.put_call = '')
           AND h.value_thousands > 0
-          AND f.id = (
-              SELECT f2.id FROM filings f2
-              WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
-              ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
-          )
         GROUP BY h.cusip
         ORDER BY total_value_thousands DESC
         LIMIT ?
         """,
-        (period, top_n),
+        (period, period, top_n),
     ).fetchall()
 
 
@@ -74,31 +77,31 @@ def position_changes(
     c = _conn(conn)
     return c.execute(
         """
-        WITH old_h AS (
-            SELECT h.cusip, h.name_of_issuer, h.value_thousands, h.shares
+        WITH old_latest AS (
+            SELECT id FROM filings
+            WHERE cik = ? AND period_of_report = ?
+            ORDER BY filed_date DESC, id DESC LIMIT 1
+        ),
+        new_latest AS (
+            SELECT id FROM filings
+            WHERE cik = ? AND period_of_report = ?
+            ORDER BY filed_date DESC, id DESC LIMIT 1
+        ),
+        old_h AS (
+            SELECT h.cusip, MAX(h.name_of_issuer) AS name_of_issuer,
+                   SUM(h.value_thousands) AS value_thousands, SUM(h.shares) AS shares
             FROM holdings h
-            JOIN filings f ON f.id = h.filing_id
-            WHERE f.cik = ? AND f.period_of_report = ?
-              AND (h.put_call IS NULL OR h.put_call = '')
-              AND h.value_thousands > 0
-              AND f.id = (
-                  SELECT f2.id FROM filings f2
-                  WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
-                  ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
-              )
+            JOIN old_latest l ON h.filing_id = l.id
+            WHERE (h.put_call IS NULL OR h.put_call = '') AND h.value_thousands > 0
+            GROUP BY h.cusip
         ),
         new_h AS (
-            SELECT h.cusip, h.name_of_issuer, h.value_thousands, h.shares
+            SELECT h.cusip, MAX(h.name_of_issuer) AS name_of_issuer,
+                   SUM(h.value_thousands) AS value_thousands, SUM(h.shares) AS shares
             FROM holdings h
-            JOIN filings f ON f.id = h.filing_id
-            WHERE f.cik = ? AND f.period_of_report = ?
-              AND (h.put_call IS NULL OR h.put_call = '')
-              AND h.value_thousands > 0
-              AND f.id = (
-                  SELECT f2.id FROM filings f2
-                  WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
-                  ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
-              )
+            JOIN new_latest l ON h.filing_id = l.id
+            WHERE (h.put_call IS NULL OR h.put_call = '') AND h.value_thousands > 0
+            GROUP BY h.cusip
         )
         SELECT
             COALESCE(n.cusip, o.cusip)            AS cusip,
@@ -247,21 +250,20 @@ def filer_summary(
     c = _conn(conn)
     row = c.execute(
         """
+        WITH latest AS (
+            SELECT id FROM filings
+            WHERE cik = ? AND period_of_report = ?
+            ORDER BY filed_date DESC, id DESC LIMIT 1
+        )
         SELECT
             COUNT(*)                   AS num_positions,
             SUM(value_thousands)       AS total_aum_thousands,
             MAX(value_thousands)       AS largest_position_thousands,
             COUNT(DISTINCT h.cusip)    AS unique_cusips
         FROM holdings h
-        JOIN filings f ON f.id = h.filing_id
-        WHERE f.cik = ? AND f.period_of_report = ?
-          AND (h.put_call IS NULL OR h.put_call = '')
+        JOIN latest l ON h.filing_id = l.id
+        WHERE (h.put_call IS NULL OR h.put_call = '')
           AND h.value_thousands > 0
-          AND f.id = (
-              SELECT f2.id FROM filings f2
-              WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
-              ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
-          )
         """,
         (cik, period),
     ).fetchone()

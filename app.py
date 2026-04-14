@@ -17,7 +17,7 @@ import plotly.io as pio
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent))
-from pipeline.database import DB_PATH, get_connection
+from pipeline.database import DB_PATH, ensure_indexes, get_connection
 from pipeline.edgar import search_filers_by_name
 
 # Thread-safe job store for background ingest operations
@@ -650,6 +650,11 @@ def load_holdings(cik: str, period: str) -> pd.DataFrame:
     conn = db_conn()
     return pd.read_sql(
         """
+        WITH latest AS (
+            SELECT id FROM filings
+            WHERE cik = ? AND period_of_report = ?
+            ORDER BY filed_date DESC, id DESC LIMIT 1
+        )
         SELECT h.cusip,
                COALESCE(s.ticker, MAX(h.name_of_issuer)) AS ticker,
                s.ticker                                   AS raw_ticker,
@@ -660,15 +665,9 @@ def load_holdings(cik: str, period: str) -> pd.DataFrame:
                h.put_call,
                MAX(h.investment_discretion)               AS investment_discretion
         FROM holdings h
-        JOIN filings f ON f.id = h.filing_id
+        JOIN latest l ON h.filing_id = l.id
         LEFT JOIN securities s ON s.cusip = h.cusip
-        WHERE f.cik = ? AND f.period_of_report = ?
-          AND h.value_thousands > 0
-          AND f.id = (
-              SELECT f2.id FROM filings f2
-              WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
-              ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
-          )
+        WHERE h.value_thousands > 0
         GROUP BY h.cusip, h.put_call, s.ticker
         ORDER BY value_thousands DESC
         """,
@@ -681,7 +680,16 @@ def load_all_holdings(period: str) -> pd.DataFrame:
     conn = db_conn()
     return pd.read_sql(
         """
-        SELECT f.cik, fi.name AS filer_name,
+        WITH latest_filings AS (
+            SELECT f.id, f.cik FROM filings f
+            WHERE f.period_of_report = ?
+              AND f.id = (
+                  SELECT f2.id FROM filings f2
+                  WHERE f2.cik = f.cik AND f2.period_of_report = ?
+                  ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
+              )
+        )
+        SELECT lf.cik, fi.name AS filer_name,
                h.cusip,
                COALESCE(s.ticker, MAX(h.name_of_issuer)) AS ticker,
                COALESCE(s.name, MAX(h.name_of_issuer))   AS name_of_issuer,
@@ -689,20 +697,14 @@ def load_all_holdings(period: str) -> pd.DataFrame:
                SUM(h.shares)                              AS shares,
                h.put_call
         FROM holdings h
-        JOIN filings f  ON f.id = h.filing_id
-        JOIN filers fi  ON fi.cik = f.cik
-        LEFT JOIN securities s ON s.cusip = h.cusip
-        WHERE f.period_of_report = ?
-          AND h.value_thousands > 0
-          AND f.id = (
-              SELECT f2.id FROM filings f2
-              WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
-              ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
-          )
-        GROUP BY f.cik, fi.name, h.cusip, h.put_call, s.ticker
+        JOIN latest_filings lf ON lf.id = h.filing_id
+        JOIN filers fi          ON fi.cik = lf.cik
+        LEFT JOIN securities s  ON s.cusip = h.cusip
+        WHERE h.value_thousands > 0
+        GROUP BY lf.cik, fi.name, h.cusip, h.put_call, s.ticker
         ORDER BY value_thousands DESC
         """,
-        conn, params=(period,),
+        conn, params=(period, period),
     )
 
 
@@ -817,6 +819,7 @@ def load_conviction_scores(period: str, min_filers: int) -> pd.DataFrame:
 # ────────────────────────────────────────────────────────────────────────────────
 
 inject_css()
+ensure_indexes()
 
 if "search_results" not in st.session_state:
     st.session_state.search_results = []
@@ -921,14 +924,20 @@ with st.sidebar:
         label_visibility="collapsed",
         key="filer_search_input",
     )
+    do_search = st.button(
+        "Search EDGAR",
+        disabled=len(search_query.strip()) < 3,
+        use_container_width=True,
+    )
 
-    # Fire EDGAR search when query changes and is long enough
-    if search_query != st.session_state.search_query:
+    # Fire EDGAR search only on explicit button press
+    if do_search:
         st.session_state.search_query = search_query
-        if len(search_query.strip()) >= 3:
-            st.session_state.search_results = search_filers_by_name(search_query.strip())
-        else:
-            st.session_state.search_results = []
+        st.session_state.search_results = search_filers_by_name(search_query.strip())
+    elif search_query != st.session_state.search_query:
+        # Query text changed without pressing Search — clear stale results
+        st.session_state.search_query = search_query
+        st.session_state.search_results = []
 
     selected_new_filer = None
     if st.session_state.search_results:
