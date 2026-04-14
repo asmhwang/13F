@@ -15,10 +15,26 @@ import time
 from pathlib import Path
 from typing import Any
 
+import os
+
 import requests
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent.parent / ".env")
+
+_EDGAR_UA = os.environ.get("EDGAR_USER_AGENT", "").strip()
+if not _EDGAR_UA:
+    import warnings
+    warnings.warn(
+        "EDGAR_USER_AGENT not set in .env — using placeholder. "
+        "SEC requires a real name + email; add to .env to avoid IP blocks:\n"
+        "  EDGAR_USER_AGENT=Your Name yourname@example.com",
+        stacklevel=2,
+    )
+    _EDGAR_UA = "13F Research Pipeline contact@example.com"
 
 _HEADERS = {
-    "User-Agent": "13F Research Pipeline research@example.com",
+    "User-Agent": _EDGAR_UA,
     "Accept-Encoding": "gzip, deflate",
 }
 _BASE      = "https://www.sec.gov"

@@ -10,6 +10,8 @@ import sys
 import threading
 from pathlib import Path
 
+import html as _html
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -500,33 +502,33 @@ _ACCENT = {
 
 def kpi_row(cards: list[tuple]) -> None:
     """cards = [(label, value, color_key, note), ...]"""
-    html = '<div class="kpi-grid">'
+    markup = '<div class="kpi-grid">'
     for label, value, color, note in cards:
         c = _ACCENT.get(color, _ACCENT["slate"])
-        note_html = f'<div class="kpi-note">{note}</div>' if note else ""
-        html += f"""
+        note_html = f'<div class="kpi-note">{_html.escape(str(note))}</div>' if note else ""
+        markup += f"""
   <div class="kpi-card" style="border-top-color:{c}">
-    <div class="kpi-label">{label}</div>
-    <div class="kpi-val" style="color:{c}">{value}</div>
+    <div class="kpi-label">{_html.escape(str(label))}</div>
+    <div class="kpi-val" style="color:{c}">{_html.escape(str(value))}</div>
     {note_html}
   </div>"""
-    html += "\n</div>"
-    st.markdown(html, unsafe_allow_html=True)
+    markup += "\n</div>"
+    st.markdown(markup, unsafe_allow_html=True)
 
 
 def shdr(title: str, tag: str = "") -> None:
-    tag_html = f'<span class="shdr-tag">{tag}</span>' if tag else ""
+    tag_html = f'<span class="shdr-tag">{_html.escape(tag)}</span>' if tag else ""
     st.markdown(f"""
 <div class="shdr">
-  <span class="shdr-title">{title}</span>
+  <span class="shdr-title">{_html.escape(title)}</span>
   <div class="shdr-line"></div>
   {tag_html}
 </div>""", unsafe_allow_html=True)
 
 
 def hero(period: str = "", filer: str = "") -> None:
-    ctx_html  = f'<span class="hero-divider">·</span><span class="hero-context">{filer}</span>' if filer else ""
-    per_html  = f'<span class="hero-period">Period&ensp;<b>{period}</b></span>' if period else ""
+    ctx_html  = f'<span class="hero-divider">·</span><span class="hero-context">{_html.escape(filer)}</span>' if filer else ""
+    per_html  = f'<span class="hero-period">Period&ensp;<b>{_html.escape(period)}</b></span>' if period else ""
     st.markdown(f"""
 <div class="hero">
   <span class="hero-title">13F Holdings</span>
