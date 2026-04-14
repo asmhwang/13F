@@ -193,7 +193,8 @@ def conviction_scores(
         position_weights AS (
             SELECT
                 h.cusip,
-                h.name_of_issuer,
+                COALESCE(s.name,   h.name_of_issuer) AS name_of_issuer,
+                COALESCE(s.ticker, h.name_of_issuer) AS ticker,
                 lf.cik,
                 h.value_thousands,
                 CAST(h.value_thousands AS REAL) / NULLIF(fa.total_aum, 0) * 100
@@ -201,6 +202,7 @@ def conviction_scores(
             FROM holdings h
             JOIN latest_filings lf ON lf.id = h.filing_id
             JOIN filer_aum      fa ON fa.cik = lf.cik
+            LEFT JOIN securities s ON s.cusip = h.cusip
             WHERE (h.put_call IS NULL OR h.put_call = '') AND h.value_thousands > 0
         ),
         buyer_flags AS (
@@ -217,6 +219,7 @@ def conviction_scores(
         )
         SELECT
             pw.cusip,
+            MAX(pw.ticker)                                       AS ticker,
             MAX(pw.name_of_issuer)                               AS name_of_issuer,
             COUNT(DISTINCT pw.cik)                               AS num_filers,
             SUM(pw.value_thousands)                              AS total_value_thousands,

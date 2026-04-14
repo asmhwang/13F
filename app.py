@@ -19,6 +19,7 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).parent))
 from pipeline.database import DB_PATH, ensure_indexes, get_connection
 from pipeline.edgar import search_filers_by_name
+from pipeline.queries import conviction_scores as _conviction_scores
 
 # Thread-safe job store for background ingest operations
 _ingest_jobs: dict[str, dict] = {}
@@ -560,11 +561,6 @@ def chg_badges(new: int, closed: int, increased: int, decreased: int) -> None:
 # DB helpers (cached)
 # ────────────────────────────────────────────────────────────────────────────────
 
-@st.cache_resource
-def db_conn():
-    return get_connection()
-
-
 def _run_ingest(cik: str, filer_name: str) -> None:
     """Background thread: ingest full history for a filer, then resolve CUSIPs."""
     from pipeline.ingest import ingest_filer
@@ -573,10 +569,10 @@ def _run_ingest(cik: str, filer_name: str) -> None:
     try:
         with _ingest_lock:
             _ingest_jobs[cik]["message"] = "Fetching filings from EDGAR..."
-        ingest_filer(cik, latest_only=False)
+        ingest_filer(cik, latest_only=False, db_path=DB_PATH)
         with _ingest_lock:
             _ingest_jobs[cik]["message"] = "Resolving CUSIPs..."
-        update_securities(quiet=True)
+        update_securities(db_path=DB_PATH, quiet=True)
         with _ingest_lock:
             _ingest_jobs[cik]["status"] = "done"
             _ingest_jobs[cik]["message"] = "Complete."
@@ -632,23 +628,26 @@ def _run_refresh() -> None:
 
 @st.cache_data(ttl=300)
 def load_filers():
-    conn = db_conn()
-    return pd.read_sql("SELECT cik, name FROM filers ORDER BY name", conn)
+    conn = get_connection()
+    df = pd.read_sql("SELECT cik, name FROM filers ORDER BY name", conn)
+    conn.close()
+    return df
 
 
 @st.cache_data(ttl=300)
 def load_periods():
-    conn = db_conn()
+    conn = get_connection()
     rows = conn.execute(
         "SELECT DISTINCT period_of_report FROM filings ORDER BY period_of_report DESC"
     ).fetchall()
+    conn.close()
     return [r[0] for r in rows]
 
 
 @st.cache_data(ttl=300)
 def load_holdings(cik: str, period: str) -> pd.DataFrame:
-    conn = db_conn()
-    return pd.read_sql(
+    conn = get_connection()
+    df = pd.read_sql(
         """
         WITH latest AS (
             SELECT id FROM filings
@@ -673,12 +672,14 @@ def load_holdings(cik: str, period: str) -> pd.DataFrame:
         """,
         conn, params=(cik, period),
     )
+    conn.close()
+    return df
 
 
 @st.cache_data(ttl=300)
 def load_all_holdings(period: str) -> pd.DataFrame:
-    conn = db_conn()
-    return pd.read_sql(
+    conn = get_connection()
+    df = pd.read_sql(
         """
         WITH latest_filings AS (
             SELECT f.id, f.cik FROM filings f
@@ -706,112 +707,27 @@ def load_all_holdings(period: str) -> pd.DataFrame:
         """,
         conn, params=(period, period),
     )
+    conn.close()
+    return df
 
 
 @st.cache_data(ttl=300)
 def load_filer_periods(cik: str) -> list[str]:
-    conn = db_conn()
+    conn = get_connection()
     rows = conn.execute(
         "SELECT DISTINCT period_of_report FROM filings WHERE cik = ? ORDER BY period_of_report DESC",
         (cik,),
     ).fetchall()
+    conn.close()
     return [r[0] for r in rows]
 
 
 @st.cache_data(ttl=300)
 def load_conviction_scores(period: str, min_filers: int) -> pd.DataFrame:
-    conn = db_conn()
-    return pd.read_sql(
-        """
-        WITH latest_filings AS (
-            -- One row per filer: the most recently filed filing for this period
-            SELECT f.id, f.cik
-            FROM filings f
-            WHERE f.period_of_report = ?
-              AND f.id = (
-                  SELECT f2.id FROM filings f2
-                  WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
-                  ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
-              )
-        ),
-        prior_period AS (
-            SELECT MAX(period_of_report) AS period
-            FROM filings
-            WHERE period_of_report < ?
-        ),
-        prior_filings AS (
-            SELECT f.id, f.cik FROM filings f
-            JOIN prior_period pp ON f.period_of_report = pp.period
-            WHERE f.id = (
-                SELECT f2.id FROM filings f2
-                WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
-                ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
-            )
-        ),
-        filer_aum AS (
-            SELECT lf.cik, SUM(h.value_thousands) AS total_aum
-            FROM holdings h
-            JOIN latest_filings lf ON lf.id = h.filing_id
-            WHERE (h.put_call IS NULL OR h.put_call = '')
-              AND h.value_thousands > 0
-            GROUP BY lf.cik
-        ),
-        prior_holdings AS (
-            SELECT h.cusip, pf.cik, SUM(h.value_thousands) AS prior_value
-            FROM holdings h
-            JOIN prior_filings pf ON pf.id = h.filing_id
-            WHERE (h.put_call IS NULL OR h.put_call = '') AND h.value_thousands > 0
-            GROUP BY h.cusip, pf.cik
-        ),
-        position_weights AS (
-            SELECT
-                h.cusip,
-                COALESCE(s.name, h.name_of_issuer)           AS name_of_issuer,
-                COALESCE(s.ticker, h.name_of_issuer)         AS ticker,
-                lf.cik,
-                h.value_thousands,
-                CAST(h.value_thousands AS REAL) / NULLIF(fa.total_aum, 0) * 100
-                    AS portfolio_weight_pct
-            FROM holdings h
-            JOIN latest_filings lf ON lf.id = h.filing_id
-            JOIN filer_aum fa      ON fa.cik = lf.cik
-            LEFT JOIN securities s ON s.cusip = h.cusip
-            WHERE (h.put_call IS NULL OR h.put_call = '')
-              AND h.value_thousands > 0
-        ),
-        buyer_flags AS (
-            SELECT pw.cusip, pw.cik,
-                CASE
-                    WHEN (SELECT period FROM prior_period) IS NULL THEN NULL
-                    WHEN ph.prior_value IS NULL                    THEN 1
-                    WHEN pw.value_thousands > ph.prior_value       THEN 1
-                    ELSE 0
-                END AS is_buyer
-            FROM position_weights pw
-            LEFT JOIN prior_holdings ph ON ph.cusip = pw.cusip AND ph.cik = pw.cik
-        )
-        SELECT
-            pw.cusip,
-            MAX(pw.ticker)         AS ticker,
-            MAX(pw.name_of_issuer) AS name_of_issuer,
-            COUNT(DISTINCT pw.cik)                               AS num_filers,
-            SUM(pw.value_thousands)                              AS total_value_thousands,
-            ROUND(AVG(pw.portfolio_weight_pct), 2)               AS avg_weight_pct,
-            ROUND(AVG(COALESCE(bf.is_buyer, 0.5)), 2)            AS net_buyer_ratio,
-            ROUND(
-                COUNT(DISTINCT pw.cik)
-                * LOG(1 + AVG(pw.portfolio_weight_pct))
-                * (1 + AVG(COALESCE(bf.is_buyer, 0.5))),
-            2)                                                   AS conviction_score
-        FROM position_weights pw
-        LEFT JOIN buyer_flags bf ON bf.cusip = pw.cusip AND bf.cik = pw.cik
-        GROUP BY pw.cusip
-        HAVING num_filers >= ?
-        ORDER BY conviction_score DESC
-        """,
-        conn,
-        params=(period, period, min_filers),
-    )
+    conn = get_connection()
+    rows = _conviction_scores(period, min_filers=min_filers, conn=conn)
+    conn.close()
+    return pd.DataFrame([dict(r) for r in rows])
 
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -836,15 +752,23 @@ if st.session_state.get("_clear_search"):
 filers_df = load_filers()
 periods   = load_periods()
 
-# Auto-rerun every 3s while any background job is running
+# Non-blocking poll — fragment reruns every 3s independently of the main thread.
+# When all jobs finish it triggers a full page rerun to refresh data.
 with _ingest_lock:
     _has_active_jobs = any(j["status"] == "ingesting" for j in _ingest_jobs.values())
 with _refresh_lock:
     _refresh_running = _refresh_status["running"]
+
 if _has_active_jobs or _refresh_running:
-    import time as _time
-    _time.sleep(3)
-    st.rerun()
+    @st.fragment(run_every=3)
+    def _job_poller() -> None:
+        with _ingest_lock:
+            still_active = any(j["status"] == "ingesting" for j in _ingest_jobs.values())
+        with _refresh_lock:
+            still_running = _refresh_status["running"]
+        if not still_active and not still_running:
+            st.rerun()
+    _job_poller()
 
 if filers_df.empty:
     st.warning("No data found. Run `python -m pipeline.ingest --seed --latest-only` first.")
