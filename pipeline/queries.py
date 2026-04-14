@@ -34,7 +34,7 @@ def top_holdings(
         """
         SELECT
             h.cusip,
-            h.name_of_issuer,
+            MAX(h.name_of_issuer)                    AS name_of_issuer,
             COUNT(DISTINCT f.cik)                    AS num_filers,
             SUM(h.value_thousands)                   AS total_value_thousands,
             SUM(COALESCE(h.shares, 0))               AS total_shares
@@ -48,7 +48,7 @@ def top_holdings(
               WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
               ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
           )
-        GROUP BY h.cusip, h.name_of_issuer
+        GROUP BY h.cusip
         ORDER BY total_value_thousands DESC
         LIMIT ?
         """,
@@ -160,11 +160,32 @@ def conviction_scores(
                   ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
               )
         ),
+        prior_period AS (
+            SELECT MAX(period_of_report) AS period
+            FROM filings
+            WHERE period_of_report < ?
+        ),
+        prior_filings AS (
+            SELECT f.id, f.cik FROM filings f
+            JOIN prior_period pp ON f.period_of_report = pp.period
+            WHERE f.id = (
+                SELECT f2.id FROM filings f2
+                WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
+                ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
+            )
+        ),
         filer_aum AS (
             SELECT lf.cik, SUM(h.value_thousands) AS total_aum
             FROM holdings h JOIN latest_filings lf ON lf.id = h.filing_id
             WHERE (h.put_call IS NULL OR h.put_call = '') AND h.value_thousands > 0
             GROUP BY lf.cik
+        ),
+        prior_holdings AS (
+            SELECT h.cusip, pf.cik, SUM(h.value_thousands) AS prior_value
+            FROM holdings h
+            JOIN prior_filings pf ON pf.id = h.filing_id
+            WHERE (h.put_call IS NULL OR h.put_call = '') AND h.value_thousands > 0
+            GROUP BY h.cusip, pf.cik
         ),
         position_weights AS (
             SELECT
@@ -178,24 +199,38 @@ def conviction_scores(
             JOIN latest_filings lf ON lf.id = h.filing_id
             JOIN filer_aum      fa ON fa.cik = lf.cik
             WHERE (h.put_call IS NULL OR h.put_call = '') AND h.value_thousands > 0
+        ),
+        buyer_flags AS (
+            SELECT pw.cusip, pw.cik,
+                -- NULL when no prior period exists → COALESCE to 0.5 default
+                CASE
+                    WHEN (SELECT period FROM prior_period) IS NULL THEN NULL
+                    WHEN ph.prior_value IS NULL                    THEN 1   -- new position
+                    WHEN pw.value_thousands > ph.prior_value       THEN 1   -- increased
+                    ELSE 0
+                END AS is_buyer
+            FROM position_weights pw
+            LEFT JOIN prior_holdings ph ON ph.cusip = pw.cusip AND ph.cik = pw.cik
         )
         SELECT
-            cusip,
-            name_of_issuer,
-            COUNT(DISTINCT cik)                              AS num_filers,
-            SUM(value_thousands)                             AS total_value_thousands,
-            ROUND(AVG(portfolio_weight_pct), 4)              AS avg_weight_pct,
+            pw.cusip,
+            MAX(pw.name_of_issuer)                               AS name_of_issuer,
+            COUNT(DISTINCT pw.cik)                               AS num_filers,
+            SUM(pw.value_thousands)                              AS total_value_thousands,
+            ROUND(AVG(pw.portfolio_weight_pct), 4)               AS avg_weight_pct,
+            ROUND(AVG(COALESCE(bf.is_buyer, 0.5)), 4)            AS net_buyer_ratio,
             ROUND(
-                COUNT(DISTINCT cik)
-                * LOG(1 + AVG(portfolio_weight_pct))
-                * 1.0,   -- net_buyer_ratio placeholder = 1.0
-            4)                                               AS conviction_score
-        FROM position_weights
-        GROUP BY cusip, name_of_issuer
+                COUNT(DISTINCT pw.cik)
+                * LOG(1 + AVG(pw.portfolio_weight_pct))
+                * (1 + AVG(COALESCE(bf.is_buyer, 0.5))),
+            4)                                                   AS conviction_score
+        FROM position_weights pw
+        LEFT JOIN buyer_flags bf ON bf.cusip = pw.cusip AND bf.cik = pw.cik
+        GROUP BY pw.cusip
         HAVING num_filers >= ?
         ORDER BY conviction_score DESC
         """,
-        (period, min_filers),
+        (period, period, min_filers),
     ).fetchall()
 
 

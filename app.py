@@ -650,13 +650,15 @@ def load_holdings(cik: str, period: str) -> pd.DataFrame:
     conn = db_conn()
     return pd.read_sql(
         """
-        SELECT h.cusip, COALESCE(s.ticker, h.name_of_issuer) AS ticker,
-               s.ticker                              AS raw_ticker,
-               COALESCE(s.name, h.name_of_issuer)   AS name_of_issuer,
-               h.title_of_class,
-               SUM(h.value_thousands) AS value_thousands,
-               SUM(h.shares)          AS shares,
-               h.put_call, h.investment_discretion
+        SELECT h.cusip,
+               COALESCE(s.ticker, MAX(h.name_of_issuer)) AS ticker,
+               s.ticker                                   AS raw_ticker,
+               COALESCE(s.name, MAX(h.name_of_issuer))   AS name_of_issuer,
+               MAX(h.title_of_class)                      AS title_of_class,
+               SUM(h.value_thousands)                     AS value_thousands,
+               SUM(h.shares)                              AS shares,
+               h.put_call,
+               MAX(h.investment_discretion)               AS investment_discretion
         FROM holdings h
         JOIN filings f ON f.id = h.filing_id
         LEFT JOIN securities s ON s.cusip = h.cusip
@@ -667,8 +669,7 @@ def load_holdings(cik: str, period: str) -> pd.DataFrame:
               WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
               ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
           )
-        GROUP BY h.cusip, h.put_call, ticker, raw_ticker, name_of_issuer,
-                 h.title_of_class, h.investment_discretion
+        GROUP BY h.cusip, h.put_call, s.ticker
         ORDER BY value_thousands DESC
         """,
         conn, params=(cik, period),
@@ -681,10 +682,11 @@ def load_all_holdings(period: str) -> pd.DataFrame:
     return pd.read_sql(
         """
         SELECT f.cik, fi.name AS filer_name,
-               h.cusip, COALESCE(s.ticker, h.name_of_issuer) AS ticker,
-               COALESCE(s.name, h.name_of_issuer)   AS name_of_issuer,
-               SUM(h.value_thousands) AS value_thousands,
-               SUM(h.shares)          AS shares,
+               h.cusip,
+               COALESCE(s.ticker, MAX(h.name_of_issuer)) AS ticker,
+               COALESCE(s.name, MAX(h.name_of_issuer))   AS name_of_issuer,
+               SUM(h.value_thousands)                     AS value_thousands,
+               SUM(h.shares)                              AS shares,
                h.put_call
         FROM holdings h
         JOIN filings f  ON f.id = h.filing_id
@@ -697,7 +699,7 @@ def load_all_holdings(period: str) -> pd.DataFrame:
               WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
               ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
           )
-        GROUP BY f.cik, fi.name, h.cusip, h.put_call, ticker, name_of_issuer
+        GROUP BY f.cik, fi.name, h.cusip, h.put_call, s.ticker
         ORDER BY value_thousands DESC
         """,
         conn, params=(period,),
@@ -730,6 +732,20 @@ def load_conviction_scores(period: str, min_filers: int) -> pd.DataFrame:
                   ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
               )
         ),
+        prior_period AS (
+            SELECT MAX(period_of_report) AS period
+            FROM filings
+            WHERE period_of_report < ?
+        ),
+        prior_filings AS (
+            SELECT f.id, f.cik FROM filings f
+            JOIN prior_period pp ON f.period_of_report = pp.period
+            WHERE f.id = (
+                SELECT f2.id FROM filings f2
+                WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
+                ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
+            )
+        ),
         filer_aum AS (
             SELECT lf.cik, SUM(h.value_thousands) AS total_aum
             FROM holdings h
@@ -738,10 +754,17 @@ def load_conviction_scores(period: str, min_filers: int) -> pd.DataFrame:
               AND h.value_thousands > 0
             GROUP BY lf.cik
         ),
+        prior_holdings AS (
+            SELECT h.cusip, pf.cik, SUM(h.value_thousands) AS prior_value
+            FROM holdings h
+            JOIN prior_filings pf ON pf.id = h.filing_id
+            WHERE (h.put_call IS NULL OR h.put_call = '') AND h.value_thousands > 0
+            GROUP BY h.cusip, pf.cik
+        ),
         position_weights AS (
             SELECT
                 h.cusip,
-                COALESCE(s.name, h.name_of_issuer) AS name_of_issuer,
+                COALESCE(s.name, h.name_of_issuer)           AS name_of_issuer,
                 COALESCE(s.ticker, h.name_of_issuer)         AS ticker,
                 lf.cik,
                 h.value_thousands,
@@ -753,24 +776,39 @@ def load_conviction_scores(period: str, min_filers: int) -> pd.DataFrame:
             LEFT JOIN securities s ON s.cusip = h.cusip
             WHERE (h.put_call IS NULL OR h.put_call = '')
               AND h.value_thousands > 0
+        ),
+        buyer_flags AS (
+            SELECT pw.cusip, pw.cik,
+                CASE
+                    WHEN (SELECT period FROM prior_period) IS NULL THEN NULL
+                    WHEN ph.prior_value IS NULL                    THEN 1
+                    WHEN pw.value_thousands > ph.prior_value       THEN 1
+                    ELSE 0
+                END AS is_buyer
+            FROM position_weights pw
+            LEFT JOIN prior_holdings ph ON ph.cusip = pw.cusip AND ph.cik = pw.cik
         )
         SELECT
-            cusip, ticker, name_of_issuer,
-            COUNT(DISTINCT cik)                              AS num_filers,
-            SUM(value_thousands)                             AS total_value_thousands,
-            ROUND(AVG(portfolio_weight_pct), 2)              AS avg_weight_pct,
+            pw.cusip,
+            MAX(pw.ticker)         AS ticker,
+            MAX(pw.name_of_issuer) AS name_of_issuer,
+            COUNT(DISTINCT pw.cik)                               AS num_filers,
+            SUM(pw.value_thousands)                              AS total_value_thousands,
+            ROUND(AVG(pw.portfolio_weight_pct), 2)               AS avg_weight_pct,
+            ROUND(AVG(COALESCE(bf.is_buyer, 0.5)), 2)            AS net_buyer_ratio,
             ROUND(
-                COUNT(DISTINCT cik)
-                * LOG(1 + AVG(portfolio_weight_pct))
-                * 1.0,
-            2)                                               AS conviction_score
-        FROM position_weights
-        GROUP BY cusip, ticker, name_of_issuer
+                COUNT(DISTINCT pw.cik)
+                * LOG(1 + AVG(pw.portfolio_weight_pct))
+                * (1 + AVG(COALESCE(bf.is_buyer, 0.5))),
+            2)                                                   AS conviction_score
+        FROM position_weights pw
+        LEFT JOIN buyer_flags bf ON bf.cusip = pw.cusip AND bf.cik = pw.cik
+        GROUP BY pw.cusip
         HAVING num_filers >= ?
         ORDER BY conviction_score DESC
         """,
         conn,
-        params=(period, min_filers),
+        params=(period, period, min_filers),
     )
 
 
@@ -1123,8 +1161,9 @@ elif view == "Conviction Scores":
 
     st.markdown("""
 <div class="formula-card">
-  <b>Conviction Score</b> = num_institutions × log(1 + avg_portfolio_weight%)<br>
-  Rewards securities that are <em>widely held</em> and carry <em>meaningful position sizes</em> relative to each filer's total AUM.
+  <b>Conviction Score</b> = num_institutions × log(1 + avg_portfolio_weight%) × (1 + net_buyer_ratio)<br>
+  Rewards securities that are <em>widely held</em>, carry <em>meaningful position sizes</em>, and are being <em>bought/increased</em> vs sold.
+  Net buyer ratio = fraction of holders who opened or grew their position vs prior quarter (0.5 default when no prior data).
 </div>""", unsafe_allow_html=True)
 
     scores_df = load_conviction_scores(selected_period, min_filers_filter)
@@ -1189,11 +1228,12 @@ elif view == "Conviction Scores":
     ).round(3)
     st.dataframe(
         display_scores[["ticker","name_of_issuer","num_filers",
-                        "avg_weight_pct","total_value_billions","conviction_score"]].rename(columns={
+                        "avg_weight_pct","net_buyer_ratio","total_value_billions","conviction_score"]].rename(columns={
             "ticker":               "Ticker",
             "name_of_issuer":       "Issuer",
             "num_filers":           "# Institutions",
             "avg_weight_pct":       "Avg Weight %",
+            "net_buyer_ratio":      "Net Buyer Ratio",
             "total_value_billions": "Total Value ($B)",
             "conviction_score":     "Conviction Score",
         }),

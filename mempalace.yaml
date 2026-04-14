@@ -1,0 +1,25 @@
+wing: 13f
+rooms:
+- name: pipeline
+  description: Files from pipeline/
+  keywords:
+  - pipeline
+  - pipeline
+- name: testing
+  description: Files from tests/
+  keywords:
+  - testing
+  - tests
+- name: documentation
+  description: Files from docs/
+  keywords:
+  - documentation
+  - docs
+- name: data
+  description: Files from data/
+  keywords:
+  - data
+  - data
+- name: general
+  description: Files that don't fit other rooms
+  keywords: []
