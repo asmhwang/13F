@@ -164,10 +164,11 @@ Then open **http://localhost:8501** in your browser.
 - Overlap heatmap: which firms hold which top securities
 
 **Conviction Scores view:**
-- Securities ranked by conviction score: `num_institutions × log(1 + avg_portfolio_weight%)`
-- Rewards securities that are both widely held and carry meaningful position sizes
+- Securities ranked by conviction score: `num_institutions × log(1 + avg_portfolio_weight%) × (1 + net_buyer_ratio)`
+- Rewards securities that are widely held, carry meaningful position sizes, and are being bought/increased vs sold
+- Net buyer ratio = fraction of holders who opened or grew their position vs prior quarter (0.5 default when no prior data)
 - Scatter plots: score vs. avg weight, and breadth vs. concentration
-- Full sortable table with score, # institutions, avg weight, and aggregate value
+- Full sortable table with score, # institutions, avg weight, net buyer ratio, and aggregate value
 
 All views filter out options (puts/calls), zero-value rows, and duplicate amendments automatically.
 
@@ -209,7 +210,7 @@ The database is a standard SQLite file at `data/13f.db`. You can query it from P
 
 ```python
 from pipeline.database import get_connection
-from pipeline.queries import top_holdings, conviction_scores, available_periods
+from pipeline.queries import top_holdings, conviction_scores, position_changes, filer_summary, available_periods
 
 conn = get_connection()
 
@@ -219,10 +220,19 @@ periods = available_periods(conn)
 # Top holdings across all filers for a period
 rows = top_holdings(periods[0], top_n=20, conn=conn)
 
-# Conviction scores (weights breadth + position size)
+# Conviction scores (weights breadth + position size + net buyer momentum)
 scores = conviction_scores(periods[0], min_filers=3, conn=conn)
 for r in scores:
     print(r["name_of_issuer"], r["conviction_score"])
+
+# Quarter-over-quarter position changes for a single filer
+changes = position_changes("0001067983", period_new=periods[0], period_old=periods[1], conn=conn)
+for r in changes:
+    print(r["name_of_issuer"], r["status"], r["pct_change"])
+
+# High-level stats for a filer in a period
+summary = filer_summary("0001067983", periods[0], conn=conn)
+print(summary["num_positions"], summary["total_aum_thousands"])
 ```
 
 Or open it with any SQLite client (e.g. [DB Browser for SQLite](https://sqlitebrowser.org/)).
