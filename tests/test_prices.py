@@ -74,3 +74,26 @@ def test_fetch_prices_calls_http_and_parses():
         rows = prices.fetch_prices("AAPL", "2021-01-01", "2021-01-31")
     m.assert_called_once()
     assert rows == [{"date": "2021-01-04", "close": 100.0, "adj_close": 99.0}]
+
+
+def test_store_prices_inserts_and_upserts(tmp_path):
+    db = tmp_path / "t.db"
+    conn = get_connection(db)
+    prices.init_schema(conn, db)
+
+    n = prices.store_prices(conn, "AAPL", [
+        {"date": "2021-01-04", "close": 100.0, "adj_close": 99.0},
+        {"date": "2021-01-05", "close": 101.0, "adj_close": 100.0},
+    ])
+    assert n == 2
+    assert conn.execute("SELECT COUNT(*) FROM prices").fetchone()[0] == 2
+
+    # Re-store same dates with new values: no duplicates, values updated.
+    prices.store_prices(conn, "AAPL", [
+        {"date": "2021-01-04", "close": 110.0, "adj_close": 109.0},
+    ])
+    assert conn.execute("SELECT COUNT(*) FROM prices").fetchone()[0] == 2
+    row = conn.execute(
+        "SELECT adj_close FROM prices WHERE ticker='AAPL' AND date='2021-01-04'"
+    ).fetchone()
+    assert row[0] == 109.0

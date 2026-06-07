@@ -97,3 +97,19 @@ def fetch_prices(symbol: str, start: str, end: str) -> list[dict]:
     """Fetch + parse adjusted daily prices for one symbol over [start, end]."""
     resp = _http_get(_chart_url(symbol, start, end))
     return parse_chart(resp.json())
+
+
+def store_prices(conn: sqlite3.Connection, ticker: str, rows: list[dict]) -> int:
+    """Upsert price rows for one ticker. Returns the number of rows written."""
+    conn.executemany(
+        """
+        INSERT INTO prices (ticker, date, close, adj_close)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(ticker, date) DO UPDATE SET
+            close     = excluded.close,
+            adj_close = excluded.adj_close
+        """,
+        [(ticker, r["date"], r["close"], r["adj_close"]) for r in rows],
+    )
+    conn.commit()
+    return len(rows)
