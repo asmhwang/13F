@@ -200,3 +200,7 @@ def test_run_stock_pipeline_end_to_end(tmp_path):
     assert raw["XXX"]["confidence_flag"] in {"High", "Medium", "Low"}
     # stock_confidence populated
     assert conn.execute("SELECT COUNT(*) FROM stock_confidence").fetchone()[0] == 2
+    # confidence_raw now populated in the raw table (not NULL)
+    assert raw["XXX"]["confidence_flag"] in {"High", "Medium", "Low"}
+    cr = conn.execute("SELECT confidence_raw FROM stock_rankings_raw WHERE ticker='XXX'").fetchone()[0]
+    assert cr is not None

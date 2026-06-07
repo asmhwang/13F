@@ -5,14 +5,12 @@ on 3-year forward return (with a fund_conviction fallback for tiny training
 sets), grades confidence, and materializes raw + filtered ranking tables.
 """
 
-import math
 import sqlite3
 from pathlib import Path
 
 import numpy as np
 
 from pipeline.database import DB_PATH, get_connection
-from pipeline.prices import _plus_three_years
 from pipeline.scoring import adapter
 
 _MIN_TRAIN_ROWS = 8          # below this, skip the fit and fall back to fund_conviction
@@ -226,15 +224,16 @@ def build_training_set(conn: sqlite3.Connection, qualifying: dict[str, float],
     sector_names = sorted(set(sector.values()))
     feature_names = ["holder_count", "fund_conviction", "avg_relative_size",
                      "range_position"] + [f"sector_{s}" for s in sector_names]
-    # target: mean return per (ticker, quarter) among qualifying funds
+    # target: mean return per (ticker, quarter) among qualifying funds only
+    qs = ",".join("?" * len(qualifying))
     rows = conn.execute(
-        """
+        f"""
         SELECT hr.ticker, hr.quarter_date, AVG(hr.three_yr_return) AS ret
         FROM holding_returns hr
-        JOIN fund_rankings fr ON fr.fund_id = hr.fund_id
         WHERE hr.three_yr_return IS NOT NULL
+          AND hr.fund_id IN ({qs})
         GROUP BY hr.ticker, hr.quarter_date
-        """).fetchall()
+        """, tuple(qualifying.keys())).fetchall()
     by_period: dict[str, dict[str, float]] = {}
     for r in rows:
         by_period.setdefault(r["quarter_date"], {})[r["ticker"]] = r["ret"]
@@ -268,29 +267,46 @@ def _normalize(values: dict[str, float]) -> dict[str, float]:
     return {k: (v - lo) / (hi - lo) for k, v in values.items()}
 
 
-def confidence_flags(universe: dict[str, dict]) -> dict[str, str]:
+def compute_confidence(universe: dict[str, dict]) -> dict[str, dict]:
     """
-    Composite confidence -> percentile bucket per the design spec.
-    Each input dict has weighted_holder_score, avg_tenure_score,
-    avg_relative_size (these three get normalized across the universe), plus
-    direction_agreement and data_quality_score (already 0-1).
-    Returns {ticker: 'High'|'Medium'|'Low'}.
+    Composite confidence per stock. `universe[ticker]` has weighted_holder_score,
+    avg_tenure_score, avg_relative_size (normalized across the universe here),
+    plus direction_agreement and data_quality_score (already 0-1).
+    Returns {ticker: {confidence_flag, confidence_raw, confidence_percentile,
+    weighted_holder_score, avg_tenure_score, avg_relative_size,
+    direction_agreement, data_quality_score}} where the three *_score/size values
+    are the normalized 0-1 components. A single-stock universe normalizes to 1.0
+    and buckets to 'High' (no relative ranking possible).
     """
+    if not universe:
+        return {}
     whs = _normalize({t: v["weighted_holder_score"] for t, v in universe.items()})
     ats = _normalize({t: v["avg_tenure_score"] for t, v in universe.items()})
     ars = _normalize({t: v["avg_relative_size"] for t, v in universe.items()})
-    raw = {}
-    for t, v in universe.items():
-        raw[t] = (whs[t] * 0.30 + ats[t] * 0.25 + ars[t] * 0.20
-                  + v["direction_agreement"] * 0.15 + v["data_quality_score"] * 0.10)
-    # percentile bucket (recomputed over this universe)
+    raw = {t: (whs[t] * 0.30 + ats[t] * 0.25 + ars[t] * 0.20
+               + v["direction_agreement"] * 0.15 + v["data_quality_score"] * 0.10)
+           for t, v in universe.items()}
     ordered = sorted(raw.values())
     n = len(ordered)
-    flags = {}
-    for t, r in raw.items():
-        pr = (sum(1 for x in ordered if x < r)) / (n - 1) if n > 1 else 1.0
-        flags[t] = "High" if pr >= 0.6667 else ("Medium" if pr >= 0.3333 else "Low")
-    return flags
+    out = {}
+    for t, v in universe.items():
+        pr = (sum(1 for x in ordered if x < raw[t]) / (n - 1)) if n > 1 else 1.0
+        flag = "High" if pr >= 0.6667 else ("Medium" if pr >= 0.3333 else "Low")
+        out[t] = {
+            "confidence_flag": flag,
+            "confidence_raw": raw[t],
+            "confidence_percentile": pr,
+            "weighted_holder_score": whs[t],
+            "avg_tenure_score": ats[t],
+            "avg_relative_size": ars[t],
+            "direction_agreement": v["direction_agreement"],
+            "data_quality_score": v["data_quality_score"],
+        }
+    return out
+
+
+def confidence_flags(universe: dict[str, dict]) -> dict[str, str]:
+    return {t: v["confidence_flag"] for t, v in compute_confidence(universe).items()}
 
 
 def _current_company_names(conn: sqlite3.Connection, tickers: list[str]) -> dict[str, str]:
@@ -382,21 +398,19 @@ def run_stock_pipeline(db_path: Path = DB_PATH) -> dict:
                                         if holders else 0.0),
                 "data_quality_score": _data_quality_for(conn, t, cq, qualifying),
             }
-        flags = confidence_flags(comp)
-        whs_n = _normalize({t: comp[t]["weighted_holder_score"] for t in universe})
-        ats_n = _normalize({t: comp[t]["avg_tenure_score"] for t in universe})
-        ars_n = _normalize({t: comp[t]["avg_relative_size"] for t in universe})
+        conf = compute_confidence(comp)
         for t in universe:
-            craw = (whs_n[t] * 0.30 + ats_n[t] * 0.25 + ars_n[t] * 0.20
-                    + comp[t]["direction_agreement"] * 0.15 + comp[t]["data_quality_score"] * 0.10)
+            c = conf[t]
             conn.execute(
                 "INSERT INTO stock_confidence(ticker,confidence_flag,confidence_raw,"
                 "weighted_holder_score,avg_tenure_score,avg_relative_size,direction_agreement,"
                 "data_quality_score,confidence_percentile) VALUES (?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(ticker) DO UPDATE SET confidence_flag=excluded.confidence_flag, "
                 "confidence_raw=excluded.confidence_raw",
-                (t, flags[t], craw, whs_n[t], ats_n[t], ars_n[t],
-                 comp[t]["direction_agreement"], comp[t]["data_quality_score"], craw))
+                (t, c["confidence_flag"], c["confidence_raw"], c["weighted_holder_score"],
+                 c["avg_tenure_score"], c["avg_relative_size"], c["direction_agreement"],
+                 c["data_quality_score"], c["confidence_percentile"]))
+        flags = {t: conf[t]["confidence_flag"] for t in universe}
 
         # fundamentals + 52wk + assemble raw output, ranked by sector_adjusted_score desc
         names = _current_company_names(conn, universe)
@@ -415,7 +429,7 @@ def run_stock_pipeline(db_path: Path = DB_PATH) -> dict:
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(ticker) DO UPDATE SET rank=excluded.rank",
                 (t, names[t], sector[t], rank, raw_scores[t], adj_scores[t], flags[t],
-                 None, sig[t]["holder_count"], sig[t]["fund_conviction"], sig[t]["net_change_pct"],
+                 conf[t]["confidence_raw"], sig[t]["holder_count"], sig[t]["fund_conviction"], sig[t]["net_change_pct"],
                  sig[t]["avg_relative_size"], sig[t]["avg_tenure"], mc, rp, partial,
                  (f["pe_ratio"] if f else None), (f["pe_available"] if f else None),
                  (f["gross_margin_pct"] if f else None)))
