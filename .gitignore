@@ -13,3 +13,6 @@ venv/
 
 # Brainstorming sessions
 .superpowers/
+
+# macOS
+.DS_Store
