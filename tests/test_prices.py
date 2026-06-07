@@ -119,6 +119,29 @@ def test_held_ticker_windows_equity_only_with_3yr_window(tmp_path):
     assert aapl["end"] == "2022-03-31"  # last quarter 2019-03-31 + 3yr
 
 
+def test_ingest_benchmark_stores_rows_over_filing_span(tmp_path):
+    db = tmp_path / "t.db"
+    _seed_holdings(db)   # filings span 2018-03-31 .. 2019-03-31
+
+    fake_rows = [
+        {"date": "2018-03-29", "close": 2600.0, "adj_close": 2600.0},
+        {"date": "2018-04-02", "close": 2580.0, "adj_close": 2580.0},
+    ]
+    with patch("pipeline.prices.fetch_prices", return_value=fake_rows) as m:
+        n = prices.ingest_benchmark(db)
+
+    # Called once for ^SP500TR over [min period, max period + 3yr]
+    sym, start, end = m.call_args.args
+    assert sym == "^SP500TR"
+    assert start == "2018-03-31"
+    assert end == "2022-03-31"
+    assert n == 2
+
+    conn = get_connection(db)
+    assert conn.execute("SELECT COUNT(*) FROM benchmark").fetchone()[0] == 2
+    assert conn.execute("SELECT adj_close FROM benchmark WHERE date='2018-03-29'").fetchone()[0] == 2600.0
+
+
 def test_ingest_prices_fetches_logs_and_is_incremental(tmp_path):
     db = tmp_path / "t.db"
     _seed_holdings(db)

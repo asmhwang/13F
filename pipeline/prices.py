@@ -136,6 +136,32 @@ def held_ticker_windows(conn: sqlite3.Connection) -> list[dict]:
     return out
 
 
+def ingest_benchmark(db_path: Path = DB_PATH) -> int:
+    """
+    Fetch the ^SP500TR total-return series over the full filing span (min period
+    .. max period + 3yr, capped today) and upsert into the benchmark table.
+    """
+    conn = get_connection(db_path)
+    init_schema(conn, db_path)
+    span = conn.execute(
+        "SELECT MIN(period_of_report) AS lo, MAX(period_of_report) AS hi FROM filings"
+    ).fetchone()
+    if span["lo"] is None:
+        return 0
+    start = span["lo"]
+    end = min(_plus_three_years(span["hi"]), date.today().isoformat())
+    rows = fetch_prices(_BENCHMARK_SYMBOL, start, end)
+    conn.executemany(
+        """
+        INSERT INTO benchmark (date, adj_close) VALUES (?, ?)
+        ON CONFLICT(date) DO UPDATE SET adj_close = excluded.adj_close
+        """,
+        [(r["date"], r["adj_close"]) for r in rows],
+    )
+    conn.commit()
+    return len(rows)
+
+
 def _already_covered(conn: sqlite3.Connection, ticker: str, start: str, end: str) -> bool:
     row = conn.execute(
         "SELECT first_date, last_date, status FROM price_fetch_log WHERE ticker = ?",
