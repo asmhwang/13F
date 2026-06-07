@@ -116,3 +116,45 @@ def compute_holding_returns(conn: sqlite3.Connection) -> None:
                     """,
                     (cik, period, key, pos_value, ret, flag))
     conn.commit()
+
+
+def _filed_date_for(conn: sqlite3.Connection, cik: str, period: str) -> str | None:
+    lf = adapter.latest_filing_id(conn, cik, period)
+    if lf is None:
+        return None
+    return conn.execute("SELECT filed_date FROM filings WHERE id = ?", (lf,)).fetchone()[0]
+
+
+def compute_qps(conn: sqlite3.Connection) -> None:
+    """Stage 3 — value-weighted quarterly performance score vs benchmark."""
+    keys = conn.execute(
+        "SELECT DISTINCT fund_id, quarter_date FROM holding_returns").fetchall()
+    for cik, period in keys:
+        rows = conn.execute(
+            "SELECT position_value_usd, three_yr_return FROM holding_returns "
+            "WHERE fund_id = ? AND quarter_date = ?", (cik, period)).fetchall()
+        included = [(v, r) for (v, r) in rows if r is not None]
+        excluded_null = len(rows) - len(included)
+        if not included:
+            continue
+        total = sum(v for v, _ in included)
+        if total == 0:
+            continue
+        raw = sum((v / total) * r for v, r in included)
+        filed = _filed_date_for(conn, cik, period)
+        br = adapter.benchmark_return(conn, filed) if filed else None
+        excess = raw - br if br is not None else None
+        conn.execute(
+            """
+            INSERT INTO fund_quarterly_scores
+                (fund_id, quarter_date, qps_raw, qps_excess, benchmark_return,
+                 positions_included, positions_excluded_null)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(fund_id, quarter_date) DO UPDATE SET
+                qps_raw = excluded.qps_raw, qps_excess = excluded.qps_excess,
+                benchmark_return = excluded.benchmark_return,
+                positions_included = excluded.positions_included,
+                positions_excluded_null = excluded.positions_excluded_null
+            """,
+            (cik, period, raw, excess, br, len(included), excluded_null))
+    conn.commit()

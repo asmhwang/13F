@@ -125,3 +125,31 @@ def test_compute_holding_returns_skips_unscoreable_quarter(tmp_path):
     conn.commit()
     fund_pipeline.compute_holding_returns(conn)
     assert conn.execute("SELECT COUNT(*) FROM holding_returns").fetchone()[0] == 0
+
+
+def test_compute_qps_value_weighted_excess(tmp_path):
+    _db_, conn = _db(tmp_path)
+    conn.execute("INSERT INTO filers(cik,name) VALUES ('f1','F1')")
+    _add_filing(conn, "f1", "2019-03-31", "2019-05-15", "f1q")
+    # holding_returns seeded directly (isolating stage 3)
+    conn.executemany(
+        "INSERT INTO holding_returns(fund_id,quarter_date,ticker,position_value_usd,"
+        "three_yr_return,data_quality_flag) VALUES (?,?,?,?,?,?)",
+        [("f1", "2019-03-31", "A", 600.0, 0.10, "clean"),
+         ("f1", "2019-03-31", "B", 400.0, -0.05, "clean"),
+         ("f1", "2019-03-31", "C", 1000.0, None, "null_excluded")])
+    conn.executemany("INSERT INTO benchmark(date,adj_close) VALUES (?,?)",
+                     [("2019-05-15", 100.0), ("2022-05-15", 110.0)])
+    conn.commit()
+
+    fund_pipeline.compute_qps(conn)
+
+    row = conn.execute(
+        "SELECT qps_raw, benchmark_return, qps_excess, positions_included, "
+        "positions_excluded_null FROM fund_quarterly_scores "
+        "WHERE fund_id='f1' AND quarter_date='2019-03-31'").fetchone()
+    assert round(row["qps_raw"], 4) == 0.04        # .6*.10 + .4*(-.05)
+    assert round(row["benchmark_return"], 4) == 0.10
+    assert round(row["qps_excess"], 4) == -0.06
+    assert row["positions_included"] == 2
+    assert row["positions_excluded_null"] == 1
