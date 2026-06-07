@@ -161,3 +161,42 @@ def test_confidence_buckets_by_thirds():
     }
     flags = stock_pipeline.confidence_flags(universe)
     assert flags["HI"] == "High" and flags["MID"] == "Medium" and flags["LO"] == "Low"
+
+
+def test_run_stock_pipeline_end_to_end(tmp_path):
+    _db_, conn = _db(tmp_path)
+    _rank(conn, "a", "Fund A", 1, 100.0)
+    fa = _add_filing(conn, "a", "2024-12-31", "2025-02-10", "a1")
+    _hold(conn, fa, "CX", 300); _hold(conn, fa, "CY", 100)
+    conn.execute("INSERT INTO securities(cusip,ticker,name) VALUES ('CX','XXX','X co'),('CY','YYY','Y co')")
+    # 52wk prices for both (>=20 pts)
+    for tk in ("XXX", "YYY"):
+        pts = [(f"2024-12-{d:02d}", 20.0) for d in range(1, 26)]
+        conn.executemany(f"INSERT INTO prices(ticker,date,close,adj_close) VALUES ('{tk}',?,?,?)",
+                         [(d, p, p) for d, p in pts])
+    # fundamentals (current quarter) + sectors
+    conn.executemany("INSERT INTO fundamentals(ticker,as_of_date,market_cap,shares_out,pe_ratio,"
+                     "pe_available,gross_margin_pct,source) VALUES (?,?,?,?,?,?,?,'finnhub')",
+                     [("XXX", "2024-12-31", 1.0e9, 1e7, 20.0, 1, 40.0),
+                      ("YYY", "2024-12-31", 2.0e9, 1e7, 15.0, 1, 30.0)])
+    conn.execute("INSERT INTO sectors(ticker,sector) VALUES ('XXX','Tech'),('YYY','Energy')")
+    # a couple of historical returns (below _MIN_TRAIN_ROWS -> fallback path)
+    conn.executemany("INSERT INTO holding_returns(fund_id,quarter_date,ticker,position_value_usd,"
+                     "three_yr_return,data_quality_flag) VALUES (?,?,?,?,?,?)",
+                     [("a", "2020-12-31", "XXX", 100.0, 0.5, "clean")])
+    conn.commit()
+
+    summary = stock_pipeline.run_stock_pipeline(_db_)
+
+    assert summary["universe"] == 2
+    raw = {r["ticker"]: r for r in conn.execute(
+        "SELECT ticker, rank, raw_score, sector_adjusted_score, confidence_flag, "
+        "market_cap, holder_count, range_position, partial FROM stock_rankings_raw").fetchall()}
+    assert set(raw) == {"XXX", "YYY"}
+    assert raw["XXX"]["holder_count"] == 1
+    assert raw["XXX"]["market_cap"] == 1.0e9
+    assert {raw["XXX"]["rank"], raw["YYY"]["rank"]} == {1, 2}
+    # confidence flag present and valid
+    assert raw["XXX"]["confidence_flag"] in {"High", "Medium", "Low"}
+    # stock_confidence populated
+    assert conn.execute("SELECT COUNT(*) FROM stock_confidence").fetchone()[0] == 2
