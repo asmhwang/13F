@@ -284,3 +284,78 @@ def compute_consistency(conn: sqlite3.Connection) -> None:
             """,
             (cik, sd, consistency))
     conn.commit()
+
+
+def _fund_aum_and_positions(conn: sqlite3.Connection, cik: str) -> tuple[float, float]:
+    """Average AUM (USD) and average equity position count across filed quarters."""
+    periods = [r[0] for r in conn.execute(
+        "SELECT DISTINCT period_of_report FROM filings WHERE cik = ?", (cik,)).fetchall()]
+    aums: list[float] = []
+    counts: list[int] = []
+    for period in periods:
+        lf = adapter.latest_filing_id(conn, cik, period)
+        if lf is None:
+            continue
+        agg = conn.execute(
+            f"SELECT COUNT(DISTINCT h.cusip), SUM(h.value_thousands) * 1000.0 "
+            f"FROM holdings h WHERE h.filing_id = ? AND {_equity_filter()}",
+            (lf,)).fetchone()
+        if agg[0]:
+            counts.append(agg[0])
+            aums.append(agg[1] or 0.0)
+    avg_aum = sum(aums) / len(aums) if aums else 0.0
+    avg_pos = sum(counts) / len(counts) if counts else 0.0
+    return avg_aum, avg_pos
+
+
+def compute_composite(conn: sqlite3.Connection) -> None:
+    """Stage 7 — composite score, 0-100 normalization, ranking, fund_rankings."""
+    funds = conn.execute(
+        """
+        SELECT t.fund_id, t.tws, t.quarters_scored, t.one_hit_wonder_flag,
+               t.best_quarter_contribution,
+               tr.avg_turnover_rate, tr.turnover_multiplier,
+               c.consistency_score, f.name
+        FROM fund_tws t
+        JOIN fund_turnover tr   ON tr.fund_id = t.fund_id
+        JOIN fund_consistency c ON c.fund_id = t.fund_id
+        JOIN filers f           ON f.cik = t.fund_id
+        """).fetchall()
+    if not funds:
+        return
+    raw = {}
+    for r in funds:
+        raw[r["fund_id"]] = (r["tws"] * r["turnover_multiplier"] * 0.70
+                             + r["consistency_score"] * 0.30)
+    lo, hi = min(raw.values()), max(raw.values())
+    span = hi - lo
+
+    ranked = sorted(funds, key=lambda r: raw[r["fund_id"]], reverse=True)
+    for rank, r in enumerate(ranked, start=1):
+        final = 100.0 if span == 0 else (raw[r["fund_id"]] - lo) / span * 100.0
+        avg_aum, avg_pos = _fund_aum_and_positions(conn, r["fund_id"])
+        conn.execute(
+            """
+            INSERT INTO fund_rankings
+                (fund_id, fund_name, rank, final_score, tws_raw,
+                 avg_turnover_rate, turnover_multiplier, consistency_score,
+                 one_hit_wonder_flag, best_quarter_contribution, quarters_of_data,
+                 avg_position_count, avg_aum, eligible, fail_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL)
+            ON CONFLICT(fund_id) DO UPDATE SET
+                fund_name = excluded.fund_name, rank = excluded.rank,
+                final_score = excluded.final_score, tws_raw = excluded.tws_raw,
+                avg_turnover_rate = excluded.avg_turnover_rate,
+                turnover_multiplier = excluded.turnover_multiplier,
+                consistency_score = excluded.consistency_score,
+                one_hit_wonder_flag = excluded.one_hit_wonder_flag,
+                best_quarter_contribution = excluded.best_quarter_contribution,
+                quarters_of_data = excluded.quarters_of_data,
+                avg_position_count = excluded.avg_position_count,
+                avg_aum = excluded.avg_aum, eligible = 1, fail_reason = NULL
+            """,
+            (r["fund_id"], r["name"], rank, final, r["tws"],
+             r["avg_turnover_rate"], r["turnover_multiplier"], r["consistency_score"],
+             r["one_hit_wonder_flag"], r["best_quarter_contribution"],
+             r["quarters_scored"], avg_pos, avg_aum))
+    conn.commit()

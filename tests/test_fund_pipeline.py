@@ -266,3 +266,36 @@ def test_compute_consistency_percentile(tmp_path):
     assert round(res["f1"]["consistency_score"], 4) == 1.0
     assert round(res["f2"]["consistency_score"], 4) == 0.5
     assert round(res["f3"]["consistency_score"], 4) == 0.0
+
+
+def test_compute_composite_normalizes_and_ranks(tmp_path):
+    _db_, conn = _db(tmp_path)
+    for cik, tws, mult, cons in [("f1", 0.10, 0.9, 1.0), ("f2", 0.20, 0.8, 0.5)]:
+        conn.execute(f"INSERT INTO filers(cik,name) VALUES ('{cik}','Fund {cik}')")
+        conn.execute(f"INSERT INTO fund_eligibility(fund_id,eligible,fail_reason) "
+                     f"VALUES ('{cik}',1,NULL)")
+        conn.execute("INSERT INTO fund_tws(fund_id,tws,quarters_scored,"
+                     "oldest_quarter_included,one_hit_wonder_flag,"
+                     "best_quarter_contribution) VALUES (?,?,?,?,?,?)",
+                     (cik, tws, 8, "2014-03-31", 0, 0.2))
+        conn.execute("INSERT INTO fund_turnover(fund_id,avg_turnover_rate,"
+                     "turnover_multiplier,quarter_pairs_measured) VALUES (?,?,?,?)",
+                     (cik, (1 - mult) * 2, mult, 5))
+        conn.execute("INSERT INTO fund_consistency(fund_id,qps_stdev,"
+                     "consistency_score) VALUES (?,?,?)", (cik, 0.05, cons))
+        fid = _add_filing(conn, cik, "2020-03-31", "2020-05-10", f"{cik}f")
+        _add_holding(conn, fid, "CA", 100)
+        _add_holding(conn, fid, "CB", 100)
+    conn.commit()
+
+    fund_pipeline.compute_composite(conn)
+
+    rows = {r["fund_id"]: r for r in conn.execute(
+        "SELECT fund_id, rank, final_score, tws_raw, fund_name, "
+        "quarters_of_data, eligible FROM fund_rankings").fetchall()}
+    # raw f1 = .1*.9*.7 + 1.0*.3 = .363 ; raw f2 = .2*.8*.7 + .5*.3 = .262
+    assert rows["f1"]["rank"] == 1 and round(rows["f1"]["final_score"], 1) == 100.0
+    assert rows["f2"]["rank"] == 2 and round(rows["f2"]["final_score"], 1) == 0.0
+    assert rows["f1"]["fund_name"] == "Fund f1"
+    assert rows["f1"]["quarters_of_data"] == 8
+    assert rows["f1"]["eligible"] == 1
