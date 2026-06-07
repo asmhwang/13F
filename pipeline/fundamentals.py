@@ -62,3 +62,21 @@ def fetch_profile(ticker: str) -> dict:
         "market_cap": _millions(data.get("marketCapitalization")),
         "shares_out": _millions(data.get("shareOutstanding")),
     }
+
+
+def fetch_metrics(ticker: str) -> dict:
+    """
+    {pe_ratio, pe_available, gross_margin_pct} from Finnhub /stock/metric.
+    A non-positive or missing P/E is treated as unavailable: pe_available=0 and
+    pe_ratio=0 (so it contributes nothing in the downstream regression).
+    """
+    metric = _finnhub_get("/stock/metric", {"symbol": ticker, "metric": "all"}).get("metric", {})
+    pe = metric.get("peTTM")
+    if isinstance(pe, (int, float)) and pe > 0:
+        pe_ratio, pe_available = float(pe), 1
+    else:
+        pe_ratio, pe_available = 0.0, 0
+    gm = metric.get("grossMarginTTM")
+    gross_margin_pct = float(gm) if isinstance(gm, (int, float)) else None
+    return {"pe_ratio": pe_ratio, "pe_available": pe_available,
+            "gross_margin_pct": gross_margin_pct}

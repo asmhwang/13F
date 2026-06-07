@@ -30,3 +30,29 @@ def test_fetch_profile_missing_fields(tmp_path):
     assert prof["sector"] is None
     assert prof["market_cap"] is None
     assert prof["shares_out"] is None
+
+
+def test_fetch_metrics_pe_and_margin():
+    payload = {"metric": {"peTTM": 36.83, "grossMarginTTM": 47.86}}
+    with patch("pipeline.fundamentals._finnhub_get", return_value=payload):
+        m = fundamentals.fetch_metrics("AAPL")
+    assert round(m["pe_ratio"], 2) == 36.83
+    assert m["pe_available"] == 1
+    assert round(m["gross_margin_pct"], 2) == 47.86
+
+
+def test_fetch_metrics_missing_pe_uses_zero():
+    payload = {"metric": {"peTTM": None, "grossMarginTTM": None}}
+    with patch("pipeline.fundamentals._finnhub_get", return_value=payload):
+        m = fundamentals.fetch_metrics("ZZZ")
+    assert m["pe_ratio"] == 0.0
+    assert m["pe_available"] == 0
+    assert m["gross_margin_pct"] is None
+
+
+def test_fetch_metrics_negative_pe_unavailable():
+    payload = {"metric": {"peTTM": -12.0, "grossMarginTTM": 10.0}}
+    with patch("pipeline.fundamentals._finnhub_get", return_value=payload):
+        m = fundamentals.fetch_metrics("LOSS")
+    assert m["pe_ratio"] == 0.0
+    assert m["pe_available"] == 0
