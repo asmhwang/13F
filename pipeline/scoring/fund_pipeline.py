@@ -158,3 +158,48 @@ def compute_qps(conn: sqlite3.Connection) -> None:
             """,
             (cik, period, raw, excess, br, len(included), excluded_null))
     conn.commit()
+
+
+def compute_tws(conn: sqlite3.Connection) -> None:
+    """Stage 4 — time-weighted score with one-hit-wonder discount.
+
+    Funds with fewer than 6 scoreable quarters are demoted to ineligible with
+    fail_reason 'insufficient_scoreable_quarters' and get no fund_tws row.
+    """
+    eligible = [r[0] for r in conn.execute(
+        "SELECT fund_id FROM fund_eligibility WHERE eligible = 1").fetchall()]
+    for cik in eligible:
+        scores = conn.execute(
+            "SELECT quarter_date, qps_excess FROM fund_quarterly_scores "
+            "WHERE fund_id = ? AND qps_excess IS NOT NULL "
+            "ORDER BY quarter_date DESC", (cik,)).fetchall()
+        if len(scores) < _MIN_SCOREABLE_QUARTERS:
+            conn.execute(
+                "UPDATE fund_eligibility SET eligible = 0, "
+                "fail_reason = 'insufficient_scoreable_quarters' WHERE fund_id = ?",
+                (cik,))
+            continue
+        # scores[0] is most recent -> weight 1.0; weight decays going back
+        weights = [_LAMBDA ** i for i in range(len(scores))]
+        contribs = [w * s["qps_excess"] for w, s in zip(weights, scores)]
+        wsum = sum(weights)
+        csum = sum(contribs)
+        tws = csum / wsum
+        best = (max(contribs) / csum) if csum != 0 else 0.0
+        ohw = best > _OHW_THRESHOLD
+        if ohw:
+            tws *= _OHW_DISCOUNT
+        oldest = scores[-1]["quarter_date"]
+        conn.execute(
+            """
+            INSERT INTO fund_tws(fund_id, tws, quarters_scored,
+                oldest_quarter_included, one_hit_wonder_flag, best_quarter_contribution)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(fund_id) DO UPDATE SET
+                tws = excluded.tws, quarters_scored = excluded.quarters_scored,
+                oldest_quarter_included = excluded.oldest_quarter_included,
+                one_hit_wonder_flag = excluded.one_hit_wonder_flag,
+                best_quarter_contribution = excluded.best_quarter_contribution
+            """,
+            (cik, tws, len(scores), oldest, 1 if ohw else 0, best))
+    conn.commit()

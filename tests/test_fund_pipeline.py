@@ -153,3 +153,57 @@ def test_compute_qps_value_weighted_excess(tmp_path):
     assert round(row["qps_excess"], 4) == -0.06
     assert row["positions_included"] == 2
     assert row["positions_excluded_null"] == 1
+
+
+def _seed_scores(conn, cik, excesses, start_year=2016):
+    """Seed fund_quarterly_scores: excesses[0] is the OLDEST quarter."""
+    conn.execute(f"INSERT INTO filers(cik,name) VALUES ('{cik}','{cik}')")
+    conn.execute(f"INSERT INTO fund_eligibility(fund_id,eligible,fail_reason) "
+                 f"VALUES ('{cik}',1,NULL)")
+    for i, ex in enumerate(excesses):
+        q = f"{start_year + i}-03-31"
+        conn.execute(
+            "INSERT INTO fund_quarterly_scores(fund_id,quarter_date,qps_raw,"
+            "qps_excess,benchmark_return,positions_included,positions_excluded_null)"
+            " VALUES (?,?,?,?,?,?,?)", (cik, q, ex, ex, 0.0, 1, 0))
+
+
+def test_compute_tws_weighted_no_ohw(tmp_path):
+    _db_, conn = _db(tmp_path)
+    _seed_scores(conn, "f1", [0.10] * 6)     # 6 equal quarters
+    conn.commit()
+    fund_pipeline.compute_tws(conn)
+    row = conn.execute("SELECT tws, quarters_scored, oldest_quarter_included, "
+                       "one_hit_wonder_flag, best_quarter_contribution "
+                       "FROM fund_tws WHERE fund_id='f1'").fetchone()
+    assert round(row["tws"], 6) == 0.10
+    assert row["quarters_scored"] == 6
+    assert row["oldest_quarter_included"] == "2016-03-31"
+    assert row["one_hit_wonder_flag"] == 0
+    assert round(row["best_quarter_contribution"], 4) == 0.2408  # 1/sum(0.85^0..5)
+
+
+def test_compute_tws_one_hit_wonder_discount(tmp_path):
+    _db_, conn = _db(tmp_path)
+    # one huge quarter dominates -> best contribution > 50% -> ×0.75
+    _seed_scores(conn, "f1", [0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+    conn.commit()
+    fund_pipeline.compute_tws(conn)
+    row = conn.execute("SELECT tws, one_hit_wonder_flag, best_quarter_contribution "
+                       "FROM fund_tws WHERE fund_id='f1'").fetchone()
+    assert row["one_hit_wonder_flag"] == 1
+    assert round(row["best_quarter_contribution"], 4) == 1.0     # only nonzero quarter
+    # raw tws = (1.0*1.0)/sum(w) = 1/4.1498 ≈ 0.24083; discounted ×0.75
+    assert round(row["tws"], 5) == round(0.24083 * 0.75, 5)
+
+
+def test_compute_tws_marks_insufficient(tmp_path):
+    _db_, conn = _db(tmp_path)
+    _seed_scores(conn, "f1", [0.1] * 5)      # only 5 < 6
+    conn.commit()
+    fund_pipeline.compute_tws(conn)
+    assert conn.execute("SELECT COUNT(*) FROM fund_tws WHERE fund_id='f1'").fetchone()[0] == 0
+    row = conn.execute("SELECT eligible, fail_reason FROM fund_eligibility "
+                       "WHERE fund_id='f1'").fetchone()
+    assert row["eligible"] == 0
+    assert row["fail_reason"] == "insufficient_scoreable_quarters"
