@@ -33,14 +33,22 @@ def _api_key() -> str | None:
 
 
 def _finnhub_get(path: str, params: dict) -> dict:
-    """GET {base}{path}?... with the API token, retrying on 429."""
+    """GET {base}{path}?... with the API token, retrying on 429, 5xx, and
+    transient network errors with exponential backoff (parity with
+    pipeline.prices._http_get)."""
     p = dict(params)
     p["token"] = _api_key()
     url = f"{_FINNHUB_BASE}{path}"
     resp = None
     for attempt in range(_MAX_RETRIES + 1):
-        resp = requests.get(url, params=p, timeout=20)
-        if resp.status_code == 429:
+        try:
+            resp = requests.get(url, params=p, timeout=20)
+        except requests.RequestException:
+            if attempt < _MAX_RETRIES:
+                time.sleep(5 * (2 ** attempt))
+                continue
+            raise
+        if resp.status_code == 429 or resp.status_code >= 500:
             if attempt < _MAX_RETRIES:
                 time.sleep(5 * (2 ** attempt))
                 continue
@@ -119,13 +127,17 @@ def ingest_fundamentals(db_path: Path = DB_PATH, limit: int | None = None) -> di
     """
     Fetch + store current-quarter fundamentals for the stock universe.
     Returns {tickers, with_sector, failed}.
+
+    Rows are per-quarter snapshots keyed on (ticker, as_of_date): a re-run
+    overwrites the current quarter in place, and prior quarters are retained as
+    history. Consumers (Phase 4) must filter on the current as_of_date.
     """
     conn = get_connection(db_path)
     try:
         adapter.init_schema(conn, db_path)
         cq = adapter.current_quarter_date(conn)
         tickers = universe_tickers(conn)
-        if limit:
+        if limit is not None:
             tickers = tickers[:limit]
         with_sector = failed = 0
         for ticker in tickers:

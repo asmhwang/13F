@@ -101,7 +101,8 @@ def test_ingest_fundamentals_populates_tables(tmp_path):
     profile = {"sector": "Technology", "market_cap": 2.0e12, "shares_out": 1.0e10}
     metrics = {"pe_ratio": 25.0, "pe_available": 1, "gross_margin_pct": 40.0}
     with patch("pipeline.fundamentals.fetch_profile", return_value=profile), \
-         patch("pipeline.fundamentals.fetch_metrics", return_value=metrics):
+         patch("pipeline.fundamentals.fetch_metrics", return_value=metrics), \
+         patch("pipeline.fundamentals.time.sleep"):
         stats = fundamentals.ingest_fundamentals(_db_)
 
     assert stats["tickers"] == 1
@@ -130,7 +131,8 @@ def test_ingest_fundamentals_skips_sector_when_missing(tmp_path):
     profile = {"sector": None, "market_cap": None, "shares_out": None}
     metrics = {"pe_ratio": 0.0, "pe_available": 0, "gross_margin_pct": None}
     with patch("pipeline.fundamentals.fetch_profile", return_value=profile), \
-         patch("pipeline.fundamentals.fetch_metrics", return_value=metrics):
+         patch("pipeline.fundamentals.fetch_metrics", return_value=metrics), \
+         patch("pipeline.fundamentals.time.sleep"):
         fundamentals.ingest_fundamentals(_db_)
     # fundamentals row still written; sectors row skipped (sector NOT NULL constraint)
     assert conn.execute("SELECT COUNT(*) FROM fundamentals WHERE ticker='AAA'").fetchone()[0] == 1
