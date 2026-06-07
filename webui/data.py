@@ -57,3 +57,61 @@ def rankings_meta(conn: sqlite3.Connection | None = None) -> dict:
         "SELECT COUNT(*) FROM fund_rankings WHERE eligible = 1"
     ).fetchone()[0]
     return {"latest_quarter": latest, "fund_count": fund_count}
+
+
+def stock_rankings(kind: str = "raw", conn: sqlite3.Connection | None = None) -> pd.DataFrame:
+    """Raw or filtered stock rankings, best first. kind in {'raw','filtered'}."""
+    table = "stock_rankings_filtered" if kind == "filtered" else "stock_rankings_raw"
+    c = _conn(conn)
+    return pd.read_sql(f"SELECT * FROM {table} ORDER BY rank ASC", c)
+
+
+def stock_holders(ticker: str, conn: sqlite3.Connection | None = None) -> pd.DataFrame:
+    """Ranked funds holding `ticker`: latest-quarter weight + quarters held.
+
+    weight = position_value / fund's total portfolio value in the latest quarter.
+    quarters_held = distinct quarters the fund reported this ticker (simplified tenure).
+    """
+    c = _conn(conn)
+    return pd.read_sql(
+        """
+        WITH latest AS (
+            SELECT f.cik, MAX(f.period_of_report) AS period
+            FROM filings f GROUP BY f.cik
+        ),
+        latest_filing AS (
+            SELECT f.id, f.cik FROM filings f
+            JOIN latest l ON l.cik = f.cik AND l.period = f.period_of_report
+        ),
+        fund_total AS (
+            SELECT lf.cik, SUM(h.value_thousands) AS total_k
+            FROM holdings h JOIN latest_filing lf ON lf.id = h.filing_id
+            WHERE h.put_call IS NULL GROUP BY lf.cik
+        ),
+        pos AS (
+            SELECT lf.cik, SUM(h.value_thousands) AS pos_k
+            FROM holdings h
+            JOIN latest_filing lf ON lf.id = h.filing_id
+            JOIN securities s ON s.cusip = h.cusip
+            WHERE s.ticker = ? AND h.put_call IS NULL
+            GROUP BY lf.cik
+        ),
+        held AS (
+            SELECT f.cik, COUNT(DISTINCT f.period_of_report) AS quarters_held
+            FROM filings f
+            JOIN holdings h ON h.filing_id = f.id
+            JOIN securities s ON s.cusip = h.cusip
+            WHERE s.ticker = ? AND h.put_call IS NULL
+            GROUP BY f.cik
+        )
+        SELECT fr.fund_name, fr.rank, fr.final_score,
+               (pos.pos_k * 1.0 / ft.total_k) AS weight,
+               held.quarters_held
+        FROM pos
+        JOIN fund_rankings fr ON fr.fund_id = pos.cik AND fr.eligible = 1
+        JOIN fund_total ft ON ft.cik = pos.cik
+        JOIN held ON held.cik = pos.cik
+        ORDER BY fr.rank ASC
+        """,
+        c, params=(ticker, ticker),
+    )
