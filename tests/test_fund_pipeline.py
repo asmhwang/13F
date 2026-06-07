@@ -72,3 +72,56 @@ def test_weed_funds_flags_each_reason(tmp_path):
     elig = dict(conn.execute(
         "SELECT fund_id, eligible FROM fund_eligibility").fetchall())
     assert elig["good"] == 1 and elig["big"] == 0
+
+
+def _resolve(conn, cusip, ticker):
+    conn.execute("INSERT INTO securities(cusip,ticker,name) VALUES (?,?,?)",
+                 (cusip, ticker, cusip))
+
+
+def test_compute_holding_returns_flags(tmp_path):
+    _db_, conn = _db(tmp_path)
+    conn.execute("INSERT INTO filers(cik,name) VALUES ('f1','F1')")
+    conn.execute("INSERT INTO fund_eligibility(fund_id,eligible,fail_reason) "
+                 "VALUES ('f1',1,NULL)")
+    fid = _add_filing(conn, "f1", "2018-03-31", "2018-05-10", "f1a")
+    _add_holding(conn, fid, "CA", 100)     # AAA  -> clean
+    _add_holding(conn, fid, "CB", 20)      # BBB  -> last_price
+    _add_holding(conn, fid, "CD", 30)      # DDD  -> resolved but no prices -> null_excluded
+    _add_holding(conn, fid, "CU", 50)      # unresolved cusip -> cusip_unresolved
+    _add_holding(conn, fid, "CO", 99, put_call="Call")  # option -> ignored
+    _resolve(conn, "CA", "AAA"); _resolve(conn, "CB", "BBB"); _resolve(conn, "CD", "DDD")
+    conn.executemany(
+        "INSERT INTO prices(ticker,date,close,adj_close) VALUES (?,?,?,?)",
+        [("AAA", "2018-05-10", 50, 50.0), ("AAA", "2021-05-10", 75, 75.0),
+         ("BBB", "2018-05-10", 20, 20.0), ("BBB", "2021-01-10", 10, 10.0)])
+    conn.commit()
+
+    fund_pipeline.compute_holding_returns(conn)
+
+    rows = {r["ticker"]: r for r in conn.execute(
+        "SELECT ticker, position_value_usd, three_yr_return, data_quality_flag "
+        "FROM holding_returns").fetchall()}
+    assert set(rows) == {"AAA", "BBB", "DDD", "CU"}        # option excluded
+    assert rows["AAA"]["position_value_usd"] == 100000.0
+    assert round(rows["AAA"]["three_yr_return"], 4) == 0.5
+    assert rows["AAA"]["data_quality_flag"] == "clean"
+    assert rows["BBB"]["data_quality_flag"] == "last_price"
+    assert rows["DDD"]["three_yr_return"] is None
+    assert rows["DDD"]["data_quality_flag"] == "null_excluded"
+    assert rows["CU"]["data_quality_flag"] == "cusip_unresolved"
+
+
+def test_compute_holding_returns_skips_unscoreable_quarter(tmp_path):
+    _db_, conn = _db(tmp_path)
+    conn.execute("INSERT INTO filers(cik,name) VALUES ('f1','F1')")
+    conn.execute("INSERT INTO fund_eligibility(fund_id,eligible,fail_reason) "
+                 "VALUES ('f1',1,NULL)")
+    # filed_date + 3yr is in the future -> not scoreable yet
+    future = date.today().isoformat()
+    fid = _add_filing(conn, "f1", future, future, "f1now")
+    _add_holding(conn, fid, "CA", 100)
+    _resolve(conn, "CA", "AAA")
+    conn.commit()
+    fund_pipeline.compute_holding_returns(conn)
+    assert conn.execute("SELECT COUNT(*) FROM holding_returns").fetchone()[0] == 0

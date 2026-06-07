@@ -64,3 +64,55 @@ def weed_funds(conn: sqlite3.Connection) -> None:
             """,
             (cik, 1 if reason is None else 0, reason))
     conn.commit()
+
+
+def _is_resolved_ticker(ticker: str | None) -> bool:
+    """A usable US equity ticker: non-empty and contains no digit."""
+    if not ticker:
+        return False
+    return not any(ch.isdigit() for ch in ticker)
+
+
+def compute_holding_returns(conn: sqlite3.Connection) -> None:
+    """Stage 2 — per-holding 3yr forward return for eligible funds."""
+    today = date.today().isoformat()
+    eligible = [r[0] for r in conn.execute(
+        "SELECT fund_id FROM fund_eligibility WHERE eligible = 1").fetchall()]
+    for cik in eligible:
+        filings = conn.execute(
+            "SELECT id, period_of_report, filed_date FROM filings WHERE cik = ?",
+            (cik,)).fetchall()
+        for fid, period, filed in filings:
+            if _plus_three_years(filed) > today:
+                continue                       # quarter not yet scoreable
+            holdings = conn.execute(
+                f"""
+                SELECT h.cusip, MAX(s.ticker) AS ticker,
+                       SUM(h.value_thousands) * 1000.0 AS pos_value
+                FROM holdings h
+                LEFT JOIN securities s ON s.cusip = h.cusip
+                WHERE h.filing_id = ? AND {_equity_filter()}
+                GROUP BY h.cusip
+                """, (fid,)).fetchall()
+            for cusip, ticker, pos_value in holdings:
+                if _is_resolved_ticker(ticker):
+                    r = adapter.three_year_return(conn, ticker, filed)
+                    if r is None:
+                        ret, flag, key = None, "null_excluded", ticker
+                    else:
+                        ret, flag, key = r[0], r[1], ticker
+                else:
+                    ret, flag, key = None, "cusip_unresolved", cusip
+                conn.execute(
+                    """
+                    INSERT INTO holding_returns
+                        (fund_id, quarter_date, ticker, position_value_usd,
+                         three_yr_return, data_quality_flag)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(fund_id, quarter_date, ticker) DO UPDATE SET
+                        position_value_usd = excluded.position_value_usd,
+                        three_yr_return    = excluded.three_yr_return,
+                        data_quality_flag  = excluded.data_quality_flag
+                    """,
+                    (cik, period, key, pos_value, ret, flag))
+    conn.commit()
