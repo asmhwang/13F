@@ -99,6 +99,43 @@ def fetch_prices(symbol: str, start: str, end: str) -> list[dict]:
     return parse_chart(resp.json())
 
 
+def _plus_three_years(d: str) -> str:
+    """Add 3 years to an ISO date string, clamping Feb-29 to Feb-28."""
+    y, m, day = (int(x) for x in d.split("-"))
+    try:
+        return date(y + 3, m, day).isoformat()
+    except ValueError:                       # Feb 29 -> Feb 28
+        return date(y + 3, m, day - 1).isoformat()
+
+
+def held_ticker_windows(conn: sqlite3.Connection) -> list[dict]:
+    """
+    For each equity ticker held by a tracked fund, the date window prices are
+    needed: [first holding quarter, min(last holding quarter + 3yr, today)].
+    Option-only positions (put_call set) and unresolved CUSIPs are excluded.
+    """
+    rows = conn.execute(
+        """
+        SELECT s.ticker                AS ticker,
+               MIN(f.period_of_report) AS first_q,
+               MAX(f.period_of_report) AS last_q
+        FROM holdings h
+        JOIN filings f    ON f.id = h.filing_id
+        JOIN securities s ON s.cusip = h.cusip
+        WHERE s.ticker IS NOT NULL AND s.ticker <> ''
+          AND (h.put_call IS NULL OR h.put_call = '')
+          AND h.value_thousands > 0
+        GROUP BY s.ticker
+        """
+    ).fetchall()
+    today = date.today().isoformat()
+    out: list[dict] = []
+    for r in rows:
+        end = min(_plus_three_years(r["last_q"]), today)
+        out.append({"ticker": r["ticker"], "start": r["first_q"], "end": end})
+    return out
+
+
 def store_prices(conn: sqlite3.Connection, ticker: str, rows: list[dict]) -> int:
     """Upsert price rows for one ticker. Returns the number of rows written."""
     conn.executemany(

@@ -76,6 +76,49 @@ def test_fetch_prices_calls_http_and_parses():
     assert rows == [{"date": "2021-01-04", "close": 100.0, "adj_close": 99.0}]
 
 
+from pipeline.database import init_db
+
+
+def _seed_holdings(db):
+    """One fund, two quarters, two tickers (one equity, one option-only)."""
+    init_db(db)
+    conn = get_connection(db)
+    conn.execute("INSERT INTO filers(cik, name) VALUES ('111','Fund A')")
+    conn.execute("INSERT INTO filings(cik, accession_number, period_of_report, filed_date) "
+                 "VALUES ('111','a1','2018-03-31','2018-05-10')")
+    conn.execute("INSERT INTO filings(cik, accession_number, period_of_report, filed_date) "
+                 "VALUES ('111','a2','2019-03-31','2019-05-10')")
+    f1 = conn.execute("SELECT id FROM filings WHERE accession_number='a1'").fetchone()[0]
+    f2 = conn.execute("SELECT id FROM filings WHERE accession_number='a2'").fetchone()[0]
+    # AAPL equity in both quarters
+    for fid in (f1, f2):
+        conn.execute("INSERT INTO holdings(filing_id,cusip,name_of_issuer,value_thousands,shares,put_call) "
+                     "VALUES (?, 'C_AAPL','APPLE INC',1000,10,NULL)", (fid,))
+    # OPT: present only as an option (put_call set) -> must be excluded
+    conn.execute("INSERT INTO holdings(filing_id,cusip,name_of_issuer,value_thousands,shares,put_call) "
+                 "VALUES (?, 'C_OPT','OPTONLY CO',500,5,'Call')", (f2,))
+    conn.execute("INSERT INTO securities(cusip,ticker,name) VALUES ('C_AAPL','AAPL','Apple')")
+    conn.execute("INSERT INTO securities(cusip,ticker,name) VALUES ('C_OPT','OPT','OptOnly')")
+    conn.commit()
+    return conn
+
+
+def test_plus_three_years_handles_leap_day():
+    assert prices._plus_three_years("2020-02-29") == "2023-02-28"
+    assert prices._plus_three_years("2021-03-31") == "2024-03-31"
+
+
+def test_held_ticker_windows_equity_only_with_3yr_window(tmp_path):
+    db = tmp_path / "t.db"
+    conn = _seed_holdings(db)
+    windows = prices.held_ticker_windows(conn)
+    tickers = {w["ticker"] for w in windows}
+    assert tickers == {"AAPL"}          # OPT excluded (option-only)
+    aapl = next(w for w in windows if w["ticker"] == "AAPL")
+    assert aapl["start"] == "2018-03-31"
+    assert aapl["end"] == "2022-03-31"  # last quarter 2019-03-31 + 3yr
+
+
 def test_store_prices_inserts_and_upserts(tmp_path):
     db = tmp_path / "t.db"
     conn = get_connection(db)
