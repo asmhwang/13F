@@ -67,22 +67,33 @@ def weed_funds(conn: sqlite3.Connection) -> None:
 
 
 def _is_resolved_ticker(ticker: str | None) -> bool:
-    """A usable US equity ticker: non-empty and contains no digit."""
+    """A usable US equity ticker: non-empty and contains no digit.
+
+    ASCII-only digit check so this matches the SQL GLOB '*[0-9]*' filter exactly.
+    """
     if not ticker:
         return False
-    return not any(ch.isdigit() for ch in ticker)
+    return not any(ch in "0123456789" for ch in ticker)
 
 
 def compute_holding_returns(conn: sqlite3.Connection) -> None:
-    """Stage 2 — per-holding 3yr forward return for eligible funds."""
+    """Stage 2 — per-holding 3yr forward return for eligible funds.
+
+    Drives off the latest (superseding) filing per period so that amendments
+    replace originals rather than racing on last-write-wins order.
+    """
     today = date.today().isoformat()
     eligible = [r[0] for r in conn.execute(
         "SELECT fund_id FROM fund_eligibility WHERE eligible = 1").fetchall()]
     for cik in eligible:
-        filings = conn.execute(
-            "SELECT id, period_of_report, filed_date FROM filings WHERE cik = ?",
-            (cik,)).fetchall()
-        for fid, period, filed in filings:
+        periods = conn.execute(
+            "SELECT DISTINCT period_of_report FROM filings WHERE cik = ?", (cik,)).fetchall()
+        for (period,) in periods:
+            fid = adapter.latest_filing_id(conn, cik, period)
+            if fid is None:
+                continue
+            filed = conn.execute(
+                "SELECT filed_date FROM filings WHERE id = ?", (fid,)).fetchone()[0]
             if _plus_three_years(filed) > today:
                 continue                       # quarter not yet scoreable
             holdings = conn.execute(
@@ -185,7 +196,9 @@ def compute_tws(conn: sqlite3.Connection) -> None:
         wsum = sum(weights)
         csum = sum(contribs)
         tws = csum / wsum
-        best = (max(contribs) / csum) if csum != 0 else 0.0
+        # Best-quarter-contribution / one-hit-wonder only applies when the fund's
+        # cumulative weighted excess is positive; avoid dividing into a negative csum.
+        best = (max(contribs) / csum) if csum > 0 else 0.0
         ohw = best > _OHW_THRESHOLD
         if ohw:
             tws *= _OHW_DISCOUNT
@@ -366,6 +379,12 @@ def run_fund_pipeline(db_path: Path = DB_PATH) -> dict:
     conn = get_connection(db_path)
     try:
         adapter.init_schema(conn, db_path)
+        # Truncate all result tables so each run is a clean rebuild; this ensures
+        # funds that become ineligible between runs are not left as stale rows.
+        for t in ("fund_eligibility", "holding_returns", "fund_quarterly_scores",
+                  "fund_tws", "fund_turnover", "fund_consistency", "fund_rankings"):
+            conn.execute(f"DELETE FROM {t}")
+        conn.commit()
         weed_funds(conn)
         compute_holding_returns(conn)
         compute_qps(conn)

@@ -349,3 +349,65 @@ def test_run_fund_pipeline_end_to_end(tmp_path):
                        "WHERE fund_id='big'").fetchone()
     assert big["fail_reason"] == "position_too_large"
     assert summary["ranked"] >= 1
+
+
+def test_run_fund_pipeline_idempotent_drops_ineligible(tmp_path):
+    _db_, conn = _db(tmp_path)
+    # Identical setup to test_run_fund_pipeline_end_to_end.
+    conn.execute("INSERT INTO filers(cik,name) VALUES ('win','Winner Fund')")
+    conn.execute("INSERT INTO filers(cik,name) VALUES ('big','Big Fund')")
+    cq = adapter.current_quarter_date(conn) or "2025-12-31"
+
+    _resolve(conn, "CA", "AAA")
+    prices = []
+    for yr in range(2016, 2023):
+        period = f"{yr}-03-31"
+        filed = f"{yr}-05-10"
+        fid = _add_filing(conn, "win", period, filed, f"w{yr}")
+        _add_holding(conn, fid, "CA", 50)
+        prices.append((filed, 100.0))
+        prices.append((_three_years_later(filed), 130.0))
+    fnow = _add_filing(conn, "win", cq, "2026-02-10", "wnow")
+    _add_holding(conn, fnow, "CA", 50)
+    conn.executemany("INSERT OR IGNORE INTO prices(ticker,date,close,adj_close) "
+                     "VALUES ('AAA',?,?,?)", [(d, p, p) for d, p in prices])
+    bench_dates = sorted({d for d, _ in prices})
+    conn.executemany("INSERT OR IGNORE INTO benchmark(date,adj_close) VALUES (?,100.0)",
+                     [(d,) for d in bench_dates])
+
+    _add_filing(conn, "big", "2015-03-31", "2015-05-10", "bold")
+    fb = _add_filing(conn, "big", cq, "2026-02-10", "bnow")
+    _add_holding(conn, fb, "CA", 200000)
+    conn.commit()
+
+    # First run: 'win' should be ranked #1.
+    fund_pipeline.run_fund_pipeline(_db_)
+    win_row = conn.execute(
+        "SELECT rank FROM fund_rankings WHERE fund_id='win'").fetchone()
+    assert win_row is not None, "'win' must be in fund_rankings after first run"
+
+    # Mutate 'win' into ineligibility: add a $200M equity position to its
+    # current-quarter filing (accession_number 'wnow').
+    wnow_fid = conn.execute(
+        "SELECT id FROM filings WHERE accession_number='wnow'").fetchone()[0]
+    conn.execute(
+        "INSERT INTO holdings(filing_id,cusip,name_of_issuer,value_thousands,shares,put_call) "
+        "VALUES (?,?,?,?,?,?)",
+        (wnow_fid, "CBIG", "Big Position", 200000, 10, None))
+    conn.commit()
+
+    # Second run: 'win' is now ineligible and must be absent from fund_rankings
+    # and fund_tws; fund_eligibility must show eligible=0, fail_reason='position_too_large'.
+    fund_pipeline.run_fund_pipeline(_db_)
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fund_rankings WHERE fund_id='win'").fetchone()[0] == 0, \
+        "stale 'win' row must be deleted from fund_rankings on re-run"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fund_tws WHERE fund_id='win'").fetchone()[0] == 0, \
+        "stale 'win' row must be deleted from fund_tws on re-run"
+    elig = conn.execute(
+        "SELECT eligible, fail_reason FROM fund_eligibility "
+        "WHERE fund_id='win'").fetchone()
+    assert elig["eligible"] == 0
+    assert elig["fail_reason"] == "position_too_large"
