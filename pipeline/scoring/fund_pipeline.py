@@ -359,3 +359,34 @@ def compute_composite(conn: sqlite3.Connection) -> None:
              r["one_hit_wonder_flag"], r["best_quarter_contribution"],
              r["quarters_scored"], avg_pos, avg_aum))
     conn.commit()
+
+
+def run_fund_pipeline(db_path: Path = DB_PATH) -> dict:
+    """Run stages 1-7 in order. Returns a small summary dict."""
+    conn = get_connection(db_path)
+    try:
+        adapter.init_schema(conn, db_path)
+        weed_funds(conn)
+        compute_holding_returns(conn)
+        compute_qps(conn)
+        compute_tws(conn)
+        compute_turnover(conn)
+        compute_consistency(conn)
+        compute_composite(conn)
+        ranked = conn.execute("SELECT COUNT(*) FROM fund_rankings").fetchone()[0]
+        eligible = conn.execute(
+            "SELECT COUNT(*) FROM fund_eligibility WHERE eligible = 1").fetchone()[0]
+        return {"eligible": eligible, "ranked": ranked}
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+    ap = argparse.ArgumentParser(description="Run the fund ranking pipeline")
+    ap.add_argument("--db", default=str(DB_PATH))
+    args = ap.parse_args()
+    print(run_fund_pipeline(Path(args.db)))

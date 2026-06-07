@@ -299,3 +299,53 @@ def test_compute_composite_normalizes_and_ranks(tmp_path):
     assert rows["f1"]["fund_name"] == "Fund f1"
     assert rows["f1"]["quarters_of_data"] == 8
     assert rows["f1"]["eligible"] == 1
+
+
+def test_run_fund_pipeline_end_to_end(tmp_path):
+    _db_, conn = _db(tmp_path)
+    # One eligible fund 'win': 6 scoreable quarters, small + concentrated.
+    conn.execute("INSERT INTO filers(cik,name) VALUES ('win','Winner Fund')")
+    conn.execute("INSERT INTO filers(cik,name) VALUES ('big','Big Fund')")
+    # 'big' fails weeding: a single $200M position in the current quarter.
+    cq = adapter.current_quarter_date(conn) or "2025-12-31"
+
+    # Winner files 7 historical March quarters 2016..2022 (filed +40 days),
+    # each holding one equity 'AAA' worth $50k; AAA doubles over each 3yr window.
+    _resolve(conn, "CA", "AAA")
+    prices = []
+    for yr in range(2016, 2023):
+        period = f"{yr}-03-31"
+        filed = f"{yr}-05-10"
+        fid = _add_filing(conn, "win", period, filed, f"w{yr}")
+        _add_holding(conn, fid, "CA", 50)
+        prices.append((filed, 100.0))
+        prices.append((_three_years_later(filed), 130.0))  # +30% each window
+    # Winner must also have filed the current quarter to pass 'inactive'.
+    fnow = _add_filing(conn, "win", cq, "2026-02-10", "wnow")
+    _add_holding(conn, fnow, "CA", 50)
+    conn.executemany("INSERT OR IGNORE INTO prices(ticker,date,close,adj_close) "
+                     "VALUES ('AAA',?,?,?)", [(d, p, p) for d, p in prices])
+    # Benchmark: flat 100 the whole time -> 0% benchmark return -> excess = +30%
+    bench_dates = sorted({d for d, _ in prices})
+    conn.executemany("INSERT OR IGNORE INTO benchmark(date,adj_close) VALUES (?,100.0)",
+                     [(d,) for d in bench_dates])
+
+    # Big fund: long history + filed current quarter + one $200M position.
+    _add_filing(conn, "big", "2015-03-31", "2015-05-10", "bold")
+    fb = _add_filing(conn, "big", cq, "2026-02-10", "bnow")
+    _add_holding(conn, fb, "CA", 200000)
+    conn.commit()
+
+    summary = fund_pipeline.run_fund_pipeline(_db_)
+
+    # Winner is eligible and ranked #1; big fund is weeded out.
+    win = conn.execute("SELECT rank, final_score, eligible, quarters_of_data "
+                       "FROM fund_rankings WHERE fund_id='win'").fetchone()
+    assert win is not None and win["rank"] == 1 and win["eligible"] == 1
+    assert win["quarters_of_data"] >= 6
+    assert conn.execute("SELECT COUNT(*) FROM fund_rankings "
+                        "WHERE fund_id='big'").fetchone()[0] == 0
+    big = conn.execute("SELECT fail_reason FROM fund_eligibility "
+                       "WHERE fund_id='big'").fetchone()
+    assert big["fail_reason"] == "position_too_large"
+    assert summary["ranked"] >= 1
