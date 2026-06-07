@@ -84,3 +84,54 @@ def test_universe_tickers_current_quarter_ranked_funds(tmp_path):
 
     tickers = fundamentals.universe_tickers(conn)
     assert set(tickers) == {"AAA", "BBB"}   # ranked fund only; option excluded; unranked excluded
+
+
+def test_ingest_fundamentals_populates_tables(tmp_path):
+    _db_, conn = _db(tmp_path)
+    cq = "2024-12-31"
+    conn.execute("INSERT INTO filers(cik,name) VALUES ('r','Ranked')")
+    conn.execute("INSERT INTO fund_rankings(fund_id,fund_name,rank,final_score,eligible) "
+                 "VALUES ('r','Ranked',1,100.0,1)")
+    fr = _add_filing(conn, "r", cq, "2025-02-10", "r1")
+    conn.execute("INSERT INTO holdings(filing_id,cusip,name_of_issuer,value_thousands,shares,put_call) "
+                 "VALUES (?,?,?,?,?,?)", (fr, "CA", "A", 100, 10, None))
+    conn.execute("INSERT INTO securities(cusip,ticker,name) VALUES ('CA','AAA','A')")
+    conn.commit()
+
+    profile = {"sector": "Technology", "market_cap": 2.0e12, "shares_out": 1.0e10}
+    metrics = {"pe_ratio": 25.0, "pe_available": 1, "gross_margin_pct": 40.0}
+    with patch("pipeline.fundamentals.fetch_profile", return_value=profile), \
+         patch("pipeline.fundamentals.fetch_metrics", return_value=metrics):
+        stats = fundamentals.ingest_fundamentals(_db_)
+
+    assert stats["tickers"] == 1
+    row = conn.execute(
+        "SELECT as_of_date, market_cap, shares_out, pe_ratio, pe_available, "
+        "gross_margin_pct, source FROM fundamentals WHERE ticker='AAA'").fetchone()
+    assert row["as_of_date"] == cq
+    assert row["market_cap"] == 2.0e12
+    assert row["pe_available"] == 1
+    assert row["gross_margin_pct"] == 40.0
+    assert row["source"] == "finnhub"
+    assert conn.execute("SELECT sector FROM sectors WHERE ticker='AAA'").fetchone()[0] == "Technology"
+
+
+def test_ingest_fundamentals_skips_sector_when_missing(tmp_path):
+    _db_, conn = _db(tmp_path)
+    cq = "2024-12-31"
+    conn.execute("INSERT INTO filers(cik,name) VALUES ('r','Ranked')")
+    conn.execute("INSERT INTO fund_rankings(fund_id,fund_name,rank,final_score,eligible) "
+                 "VALUES ('r','Ranked',1,100.0,1)")
+    fr = _add_filing(conn, "r", cq, "2025-02-10", "r1")
+    conn.execute("INSERT INTO holdings(filing_id,cusip,name_of_issuer,value_thousands,shares,put_call) "
+                 "VALUES (?,?,?,?,?,?)", (fr, "CA", "A", 100, 10, None))
+    conn.execute("INSERT INTO securities(cusip,ticker,name) VALUES ('CA','AAA','A')")
+    conn.commit()
+    profile = {"sector": None, "market_cap": None, "shares_out": None}
+    metrics = {"pe_ratio": 0.0, "pe_available": 0, "gross_margin_pct": None}
+    with patch("pipeline.fundamentals.fetch_profile", return_value=profile), \
+         patch("pipeline.fundamentals.fetch_metrics", return_value=metrics):
+        fundamentals.ingest_fundamentals(_db_)
+    # fundamentals row still written; sectors row skipped (sector NOT NULL constraint)
+    assert conn.execute("SELECT COUNT(*) FROM fundamentals WHERE ticker='AAA'").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM sectors WHERE ticker='AAA'").fetchone()[0] == 0

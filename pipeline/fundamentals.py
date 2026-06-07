@@ -113,3 +113,65 @@ def universe_tickers(conn: sqlite3.Connection) -> list[str]:
         {"cq": cq},
     ).fetchall()
     return [r[0] for r in rows]
+
+
+def ingest_fundamentals(db_path: Path = DB_PATH, limit: int | None = None) -> dict:
+    """
+    Fetch + store current-quarter fundamentals for the stock universe.
+    Returns {tickers, with_sector, failed}.
+    """
+    conn = get_connection(db_path)
+    try:
+        adapter.init_schema(conn, db_path)
+        cq = adapter.current_quarter_date(conn)
+        tickers = universe_tickers(conn)
+        if limit:
+            tickers = tickers[:limit]
+        with_sector = failed = 0
+        for ticker in tickers:
+            try:
+                prof = fetch_profile(ticker)
+                met = fetch_metrics(ticker)
+            except Exception as exc:                 # noqa: BLE001 — log + continue
+                print(f"  [ERROR] {ticker}: {exc}")
+                failed += 1
+                continue
+            conn.execute(
+                """
+                INSERT INTO fundamentals
+                    (ticker, as_of_date, market_cap, shares_out, pe_ratio,
+                     pe_available, gross_margin_pct, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'finnhub')
+                ON CONFLICT(ticker, as_of_date) DO UPDATE SET
+                    market_cap = excluded.market_cap, shares_out = excluded.shares_out,
+                    pe_ratio = excluded.pe_ratio, pe_available = excluded.pe_available,
+                    gross_margin_pct = excluded.gross_margin_pct, source = excluded.source
+                """,
+                (ticker, cq, prof["market_cap"], prof["shares_out"],
+                 met["pe_ratio"], met["pe_available"], met["gross_margin_pct"]))
+            if prof["sector"]:
+                conn.execute(
+                    "INSERT INTO sectors(ticker, sector) VALUES (?, ?) "
+                    "ON CONFLICT(ticker) DO UPDATE SET sector = excluded.sector",
+                    (ticker, prof["sector"]))
+                with_sector += 1
+            conn.commit()
+            time.sleep(_RATE_SLEEP)
+        return {"tickers": len(tickers), "with_sector": with_sector, "failed": failed}
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    ap = argparse.ArgumentParser(description="Ingest current-quarter fundamentals (Finnhub)")
+    ap.add_argument("--db", default=str(DB_PATH))
+    ap.add_argument("--limit", type=int, default=None, help="cap number of tickers")
+    args = ap.parse_args()
+    if not _api_key():
+        print("FINNHUB_API_KEY not set in .env — aborting.")
+        sys.exit(1)
+    print(ingest_fundamentals(Path(args.db), limit=args.limit))
