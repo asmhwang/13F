@@ -110,3 +110,35 @@ def test_range_position_52w(tmp_path):
     # no prices -> NULL, partial 1
     pos3, partial3 = stock_pipeline.range_position_52w(conn, "NONE", "2024-12-31")
     assert pos3 is None and partial3 == 1
+
+
+import numpy as np
+
+
+def test_regress_scores_recovers_linear_signal():
+    # y = 2*x1 + 3 ; one feature, perfect line -> predictions equal targets
+    feature_names = ["x1"]
+    train_X = [[1.0], [2.0], [3.0], [4.0], [5.0], [6.0], [7.0], [8.0]]
+    train_y = [5.0, 7.0, 9.0, 11.0, 13.0, 15.0, 17.0, 19.0]
+    pred_rows = {"AAA": [1.0], "BBB": [10.0]}
+    scores = stock_pipeline.regress_scores(feature_names, train_X, train_y, pred_rows)
+    assert round(scores["AAA"], 3) == 5.0
+    assert round(scores["BBB"], 3) == 23.0
+
+
+def test_regress_scores_fallback_when_too_few_rows():
+    # fewer than _MIN_TRAIN_ROWS -> returns the provided fallback per ticker
+    scores = stock_pipeline.regress_scores(
+        ["x1"], [[1.0], [2.0]], [1.0, 2.0],
+        {"AAA": [9.0], "BBB": [9.0]},
+        fallback={"AAA": 0.7, "BBB": 0.2})
+    assert scores == {"AAA": 0.7, "BBB": 0.2}
+
+
+def test_sector_adjust():
+    raw = {"AAA": 1.0, "BBB": 3.0, "CCC": 5.0}
+    sector = {"AAA": "Tech", "BBB": "Tech", "CCC": "Energy"}
+    adj = stock_pipeline.sector_adjust(raw, sector)
+    # Tech mean = 2.0 ; Energy mean = 5.0
+    assert round(adj["AAA"], 4) == -1.0 and round(adj["BBB"], 4) == 1.0
+    assert round(adj["CCC"], 4) == 0.0
