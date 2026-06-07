@@ -207,3 +207,30 @@ def test_compute_tws_marks_insufficient(tmp_path):
                        "WHERE fund_id='f1'").fetchone()
     assert row["eligible"] == 0
     assert row["fail_reason"] == "insufficient_scoreable_quarters"
+
+
+def test_compute_turnover_mean_and_multiplier(tmp_path):
+    _db_, conn = _db(tmp_path)
+    conn.execute("INSERT INTO filers(cik,name) VALUES ('f1','F1')")
+    conn.execute("INSERT INTO fund_tws(fund_id,tws,quarters_scored,"
+                 "oldest_quarter_included,one_hit_wonder_flag,best_quarter_contribution)"
+                 " VALUES ('f1',0.1,6,'2016-03-31',0,0.2)")
+    q1 = _add_filing(conn, "f1", "2020-03-31", "2020-05-10", "q1")
+    q2 = _add_filing(conn, "f1", "2020-06-30", "2020-08-10", "q2")
+    q3 = _add_filing(conn, "f1", "2020-09-30", "2020-11-10", "q3")
+    for c in ("CA", "CB", "CC"):
+        _add_holding(conn, q1, c, 10)
+    for c in ("CB", "CC", "CD"):            # dropped CA, added CD -> 1/3 turnover
+        _add_holding(conn, q2, c, 10)
+    for c in ("CB", "CC", "CD"):            # no change -> 0 turnover
+        _add_holding(conn, q3, c, 10)
+    conn.commit()
+
+    fund_pipeline.compute_turnover(conn)
+
+    row = conn.execute("SELECT avg_turnover_rate, turnover_multiplier, "
+                       "quarter_pairs_measured FROM fund_turnover "
+                       "WHERE fund_id='f1'").fetchone()
+    assert round(row["avg_turnover_rate"], 4) == 0.1667    # mean(1/3, 0)
+    assert round(row["turnover_multiplier"], 4) == 0.9167  # 1 - 0.1667*0.5
+    assert row["quarter_pairs_measured"] == 2

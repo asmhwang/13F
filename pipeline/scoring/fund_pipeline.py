@@ -203,3 +203,48 @@ def compute_tws(conn: sqlite3.Connection) -> None:
             """,
             (cik, tws, len(scores), oldest, 1 if ohw else 0, best))
     conn.commit()
+
+
+def _quarter_cusips(conn: sqlite3.Connection, cik: str, period: str) -> set[str]:
+    lf = adapter.latest_filing_id(conn, cik, period)
+    if lf is None:
+        return set()
+    rows = conn.execute(
+        f"SELECT DISTINCT h.cusip FROM holdings h "
+        f"WHERE h.filing_id = ? AND {_equity_filter()}", (lf,)).fetchall()
+    return {r[0] for r in rows}
+
+
+def compute_turnover(conn: sqlite3.Connection) -> None:
+    """Stage 5 — average position turnover and its score multiplier.
+
+    Computed for funds that have a fund_tws row (fully scored funds).
+    """
+    funds = [r[0] for r in conn.execute(
+        "SELECT fund_id FROM fund_tws").fetchall()]
+    for cik in funds:
+        periods = [r[0] for r in conn.execute(
+            "SELECT DISTINCT period_of_report FROM filings WHERE cik = ? "
+            "ORDER BY period_of_report", (cik,)).fetchall()]
+        rates: list[float] = []
+        prev = _quarter_cusips(conn, cik, periods[0]) if periods else set()
+        for period in periods[1:]:
+            cur = _quarter_cusips(conn, cik, period)
+            if prev:
+                dropped = len(prev - cur)
+                rates.append(dropped / len(prev))
+            prev = cur
+        avg = sum(rates) / len(rates) if rates else 0.0
+        mult = max(0.5, min(1.0, 1 - avg * 0.5))
+        conn.execute(
+            """
+            INSERT INTO fund_turnover(fund_id, avg_turnover_rate,
+                turnover_multiplier, quarter_pairs_measured)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(fund_id) DO UPDATE SET
+                avg_turnover_rate = excluded.avg_turnover_rate,
+                turnover_multiplier = excluded.turnover_multiplier,
+                quarter_pairs_measured = excluded.quarter_pairs_measured
+            """,
+            (cik, avg, mult, len(rates)))
+    conn.commit()
