@@ -55,3 +55,22 @@ def test_parse_chart_falls_back_to_close_when_adj_missing():
 
 def test_parse_chart_empty_payload_returns_empty():
     assert prices.parse_chart({"chart": {"result": []}}) == []
+
+
+from unittest.mock import patch, MagicMock
+
+
+def test_chart_url_encodes_symbol_and_dates():
+    url = prices._chart_url("^SP500TR", "2021-01-01", "2021-01-02")
+    assert url.startswith("https://query1.finance.yahoo.com/v8/finance/chart/%5ESP500TR")
+    assert "interval=1d" in url
+    assert "period1=" in url and "period2=" in url
+
+
+def test_fetch_prices_calls_http_and_parses():
+    resp = MagicMock()
+    resp.json.return_value = _sample_chart_payload()
+    with patch("pipeline.prices._http_get", return_value=resp) as m:
+        rows = prices.fetch_prices("AAPL", "2021-01-01", "2021-01-31")
+    m.assert_called_once()
+    assert rows == [{"date": "2021-01-04", "close": 100.0, "adj_close": 99.0}]

@@ -65,3 +65,35 @@ def parse_chart(payload: dict) -> list[dict]:
         d = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
         rows.append({"date": d, "close": close, "adj_close": adj})
     return rows
+
+
+def _chart_url(symbol: str, start: str, end: str) -> str:
+    p1 = int(datetime.strptime(start, "%Y-%m-%d")
+             .replace(tzinfo=timezone.utc).timestamp())
+    # +1 day so the end date itself is inclusive
+    p2 = int((datetime.strptime(end, "%Y-%m-%d")
+              .replace(tzinfo=timezone.utc) + timedelta(days=1)).timestamp())
+    return (f"{_CHART_BASE}{quote(symbol)}"
+            f"?period1={p1}&period2={p2}&interval=1d&events=div%2Csplit")
+
+
+def _http_get(url: str) -> requests.Response:
+    """GET with simple exponential backoff on 429."""
+    resp = None
+    for attempt in range(_MAX_RETRIES + 1):
+        resp = requests.get(url, headers=_HEADERS, timeout=30)
+        if resp.status_code == 429:
+            wait = 5 * (2 ** attempt)
+            print(f"    [429] Yahoo rate limit — waiting {wait}s")
+            time.sleep(wait)
+            continue
+        resp.raise_for_status()
+        return resp
+    resp.raise_for_status()
+    return resp
+
+
+def fetch_prices(symbol: str, start: str, end: str) -> list[dict]:
+    """Fetch + parse adjusted daily prices for one symbol over [start, end]."""
+    resp = _http_get(_chart_url(symbol, start, end))
+    return parse_chart(resp.json())
