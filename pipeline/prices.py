@@ -38,3 +38,30 @@ def init_schema(conn: sqlite3.Connection | None = None, db_path: Path = DB_PATH)
     c = conn or get_connection(db_path)
     c.executescript(_SCHEMA_PATH.read_text())
     c.commit()
+
+
+def parse_chart(payload: dict) -> list[dict]:
+    """
+    Turn a Yahoo v8 chart JSON payload into [{date, close, adj_close}, ...].
+    Rows with a null close (non-trading gaps) are skipped. When adjclose is
+    absent for a row, close is used as the adjusted value.
+    """
+    results = (payload.get("chart") or {}).get("result") or []
+    if not results:
+        return []
+    res = results[0]
+    timestamps = res.get("timestamp") or []
+    indicators = res.get("indicators") or {}
+    quote_block = (indicators.get("quote") or [{}])[0]
+    adj_block = (indicators.get("adjclose") or [{}])[0]
+    closes = quote_block.get("close") or []
+    adjs = adj_block.get("adjclose") or []
+    rows: list[dict] = []
+    for i, ts in enumerate(timestamps):
+        close = closes[i] if i < len(closes) else None
+        if close is None:
+            continue
+        adj = adjs[i] if i < len(adjs) and adjs[i] is not None else close
+        d = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+        rows.append({"date": d, "close": close, "adj_close": adj})
+    return rows
