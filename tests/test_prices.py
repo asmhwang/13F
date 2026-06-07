@@ -215,8 +215,9 @@ def test_ingest_prices_logs_no_data_when_empty(tmp_path):
     m.assert_not_called()
 
 
-def test_held_ticker_windows_excludes_letterless_tickers(tmp_path):
-    """Tickers with no ASCII letter (e.g. '016') must be filtered out."""
+def test_held_ticker_windows_excludes_digit_tickers(tmp_path):
+    """Junk tickers containing any digit (all-digit '016' or mixed '02Z0') are
+    filtered out; real letter-only US tickers are kept."""
     db = tmp_path / "t.db"
     init_db(db)
     conn = get_connection(db)
@@ -226,17 +227,19 @@ def test_held_ticker_windows_excludes_letterless_tickers(tmp_path):
     fid = conn.execute("SELECT id FROM filings WHERE accession_number='b1'").fetchone()[0]
     # Real ticker
     conn.execute("INSERT INTO securities(cusip,ticker,name) VALUES ('C_MSFT','MSFT','Microsoft')")
-    # Junk ticker — all digits, no letters
+    # Junk: all digits, no letters
     conn.execute("INSERT INTO securities(cusip,ticker,name) VALUES ('C_JUNK','016','Junk CUSIP')")
-    conn.execute("INSERT INTO holdings(filing_id,cusip,name_of_issuer,value_thousands,shares,put_call) "
-                 "VALUES (?, 'C_MSFT','Microsoft',2000,20,NULL)", (fid,))
-    conn.execute("INSERT INTO holdings(filing_id,cusip,name_of_issuer,value_thousands,shares,put_call) "
-                 "VALUES (?, 'C_JUNK','Junk',500,5,NULL)", (fid,))
+    # Junk: letters + digits (FIGI/SEDOL-style code)
+    conn.execute("INSERT INTO securities(cusip,ticker,name) VALUES ('C_JNK2','02Z0','Junk FIGI')")
+    for cusip in ("C_MSFT", "C_JUNK", "C_JNK2"):
+        conn.execute("INSERT INTO holdings(filing_id,cusip,name_of_issuer,value_thousands,shares,put_call) "
+                     "VALUES (?, ?, 'X', 1000, 10, NULL)", (fid, cusip))
     conn.commit()
     prices.init_schema(conn, db)
     windows = prices.held_ticker_windows(conn)
     tickers = {w["ticker"] for w in windows}
     assert "016" not in tickers
+    assert "02Z0" not in tickers
     assert "MSFT" in tickers
 
 

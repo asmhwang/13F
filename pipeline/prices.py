@@ -147,6 +147,10 @@ def held_ticker_windows(conn: sqlite3.Connection) -> list[dict]:
     For each equity ticker held by a tracked fund, the date window prices are
     needed: [first holding quarter, min(last holding quarter + 3yr, today)].
     Option-only positions (put_call set) and unresolved CUSIPs are excluded.
+    Tickers containing any digit are also excluded: these are junk FIGI/SEDOL-
+    style codes (e.g. '02Z0', '16871USD') that the CUSIP resolver produced and
+    that are not real US equity symbols (which never contain digits). This drops
+    ~22% of resolved tickers and avoids that many dead Yahoo round-trips.
     """
     rows = conn.execute(
         """
@@ -157,7 +161,7 @@ def held_ticker_windows(conn: sqlite3.Connection) -> list[dict]:
         JOIN filings f    ON f.id = h.filing_id
         JOIN securities s ON s.cusip = h.cusip
         WHERE s.ticker IS NOT NULL AND s.ticker <> ''
-          AND s.ticker GLOB '*[A-Za-z]*'
+          AND s.ticker NOT GLOB '*[0-9]*'
           AND (h.put_call IS NULL OR h.put_call = '')
           AND h.value_thousands > 0
         GROUP BY s.ticker
