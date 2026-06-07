@@ -297,3 +297,30 @@ def store_prices(conn: sqlite3.Connection, ticker: str, rows: list[dict]) -> int
     )
     conn.commit()
     return len(rows)
+
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    ap = argparse.ArgumentParser(description="Ingest prices + benchmark for ranking")
+    ap.add_argument("--db", default=str(DB_PATH))
+    ap.add_argument("--coverage", action="store_true", help="print coverage report and exit")
+    ap.add_argument("--limit", type=int, default=None, help="cap number of tickers (smoke test)")
+    ap.add_argument("--force", action="store_true", help="refetch even if covered")
+    ap.add_argument("--no-benchmark", action="store_true", help="skip benchmark fetch")
+    args = ap.parse_args()
+
+    db = Path(args.db)
+    conn = get_connection(db)
+    init_schema(conn, db)
+
+    if args.coverage:
+        print(coverage_report(conn))
+        sys.exit(0)
+
+    if not args.no_benchmark:
+        print(f"benchmark: {ingest_benchmark(db)} rows")
+    print(ingest_prices(db, force=args.force, limit=args.limit))
+    print(coverage_report(conn))
