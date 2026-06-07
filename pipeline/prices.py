@@ -136,6 +136,61 @@ def held_ticker_windows(conn: sqlite3.Connection) -> list[dict]:
     return out
 
 
+def coverage_report(conn: sqlite3.Connection) -> dict:
+    """
+    For the most recent quarter, the fraction of equity holding value (resolved
+    tickers) that has a price within 7 calendar days on/before the quarter date
+    (as-of) and a price on/before quarter + 3yr (forward).
+    """
+    latest = conn.execute(
+        "SELECT MAX(period_of_report) AS q FROM filings"
+    ).fetchone()["q"]
+    if latest is None:
+        return {"quarter": None, "total_value_thousands": 0,
+                "asof_coverage_pct": 0.0, "forward_coverage_pct": 0.0}
+    fwd = _plus_three_years(latest)
+    row = conn.execute(
+        """
+        WITH latest_filings AS (
+            SELECT f.id FROM filings f
+            WHERE f.period_of_report = :q
+              AND f.id = (SELECT f2.id FROM filings f2
+                          WHERE f2.cik = f.cik AND f2.period_of_report = :q
+                          ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1)
+        ),
+        held AS (
+            SELECT s.ticker AS ticker, SUM(h.value_thousands) AS val
+            FROM holdings h
+            JOIN latest_filings lf ON lf.id = h.filing_id
+            JOIN securities s ON s.cusip = h.cusip
+            WHERE s.ticker IS NOT NULL AND s.ticker <> ''
+              AND (h.put_call IS NULL OR h.put_call = '')
+              AND h.value_thousands > 0
+            GROUP BY s.ticker
+        )
+        SELECT
+            SUM(val) AS total_val,
+            SUM(CASE WHEN EXISTS (
+                SELECT 1 FROM prices p WHERE p.ticker = held.ticker
+                  AND p.date <= :q AND p.date >= date(:q, '-7 day')
+            ) THEN val ELSE 0 END) AS asof_val,
+            SUM(CASE WHEN EXISTS (
+                SELECT 1 FROM prices p WHERE p.ticker = held.ticker
+                  AND p.date <= :fwd
+            ) THEN val ELSE 0 END) AS fwd_val
+        FROM held
+        """,
+        {"q": latest, "fwd": fwd},
+    ).fetchone()
+    total = row["total_val"] or 0
+    return {
+        "quarter": latest,
+        "total_value_thousands": total,
+        "asof_coverage_pct": round(100 * (row["asof_val"] or 0) / total, 1) if total else 0.0,
+        "forward_coverage_pct": round(100 * (row["fwd_val"] or 0) / total, 1) if total else 0.0,
+    }
+
+
 def ingest_benchmark(db_path: Path = DB_PATH) -> int:
     """
     Fetch the ^SP500TR total-return series over the full filing span (min period

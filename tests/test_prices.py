@@ -119,6 +119,41 @@ def test_held_ticker_windows_equity_only_with_3yr_window(tmp_path):
     assert aapl["end"] == "2022-03-31"  # last quarter 2019-03-31 + 3yr
 
 
+def _seed_coverage(db):
+    """Latest quarter 2019-03-31 with two equity tickers AAPL(1000) + MSFT(3000)."""
+    init_db(db)
+    conn = get_connection(db)
+    conn.execute("INSERT INTO filers(cik, name) VALUES ('111','Fund A')")
+    conn.execute("INSERT INTO filings(cik, accession_number, period_of_report, filed_date) "
+                 "VALUES ('111','a1','2019-03-31','2019-05-10')")
+    fid = conn.execute("SELECT id FROM filings WHERE accession_number='a1'").fetchone()[0]
+    conn.execute("INSERT INTO holdings(filing_id,cusip,name_of_issuer,value_thousands,shares,put_call) "
+                 "VALUES (?, 'C_AAPL','APPLE',1000,10,NULL)", (fid,))
+    conn.execute("INSERT INTO holdings(filing_id,cusip,name_of_issuer,value_thousands,shares,put_call) "
+                 "VALUES (?, 'C_MSFT','MICROSOFT',3000,10,NULL)", (fid,))
+    conn.execute("INSERT INTO securities(cusip,ticker,name) VALUES ('C_AAPL','AAPL','Apple')")
+    conn.execute("INSERT INTO securities(cusip,ticker,name) VALUES ('C_MSFT','MSFT','Microsoft')")
+    prices.init_schema(conn, db)
+    # AAPL priced at as-of and forward; MSFT not priced at all.
+    prices.store_prices(conn, "AAPL", [
+        {"date": "2019-03-29", "close": 50.0, "adj_close": 50.0},   # within 7d of as-of
+        {"date": "2022-03-31", "close": 80.0, "adj_close": 80.0},   # forward (as-of+3yr)
+    ])
+    return conn
+
+
+def test_coverage_report_value_weighted(tmp_path):
+    db = tmp_path / "t.db"
+    _seed_coverage(db)
+    conn = get_connection(db)
+    rep = prices.coverage_report(conn)
+    assert rep["quarter"] == "2019-03-31"
+    assert rep["total_value_thousands"] == 4000
+    # Only AAPL (1000 of 4000) is priced -> 25%
+    assert rep["asof_coverage_pct"] == 25.0
+    assert rep["forward_coverage_pct"] == 25.0
+
+
 def test_ingest_benchmark_stores_rows_over_filing_span(tmp_path):
     db = tmp_path / "t.db"
     _seed_holdings(db)   # filings span 2018-03-31 .. 2019-03-31
