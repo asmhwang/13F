@@ -109,3 +109,61 @@ CREATE TABLE IF NOT EXISTS sectors (
     ticker  TEXT PRIMARY KEY,
     sector  TEXT NOT NULL
 );
+
+-- ---- Phase 4: stock ranking ------------------------------------------------
+CREATE TABLE IF NOT EXISTS stock_signals (
+    ticker            TEXT NOT NULL,
+    as_of_date        DATE NOT NULL,
+    fund_conviction   REAL,
+    holder_count      INTEGER,
+    net_change_pct    REAL,
+    avg_relative_size REAL,
+    avg_tenure        REAL,
+    PRIMARY KEY (ticker, as_of_date)
+);
+
+CREATE TABLE IF NOT EXISTS stock_confidence (
+    ticker                TEXT PRIMARY KEY,
+    confidence_flag       TEXT,
+    confidence_raw        REAL,
+    weighted_holder_score REAL,
+    avg_tenure_score      REAL,
+    avg_relative_size     REAL,
+    direction_agreement   REAL,
+    data_quality_score    REAL,
+    confidence_percentile REAL
+);
+
+CREATE TABLE IF NOT EXISTS stock_rankings_raw (
+    ticker                TEXT PRIMARY KEY,
+    company_name          TEXT,
+    sector                TEXT,
+    rank                  INTEGER,
+    raw_score             REAL,
+    sector_adjusted_score REAL,
+    confidence_flag       TEXT,
+    confidence_raw        REAL,
+    holder_count          INTEGER,
+    fund_conviction       REAL,
+    net_change_pct        REAL,
+    avg_relative_size     REAL,
+    avg_tenure            REAL,
+    market_cap            REAL,
+    range_position        REAL,    -- 52-week range position
+    partial               INTEGER, -- 52-week partial flag (0/1)
+    pe_ratio              REAL,
+    pe_available          INTEGER,
+    gross_margin_pct      REAL
+);
+
+CREATE TABLE IF NOT EXISTS stock_rankings_filtered (
+    ticker                TEXT PRIMARY KEY,
+    rank                  INTEGER,
+    company_name          TEXT,
+    sector                TEXT,
+    sector_adjusted_score REAL,
+    confidence_flag       TEXT,
+    market_cap            REAL,
+    range_position        REAL,
+    holder_count          INTEGER
+);
