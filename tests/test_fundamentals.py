@@ -56,3 +56,31 @@ def test_fetch_metrics_negative_pe_unavailable():
         m = fundamentals.fetch_metrics("LOSS")
     assert m["pe_ratio"] == 0.0
     assert m["pe_available"] == 0
+
+
+def _add_filing(conn, cik, period, filed, acc):
+    conn.execute("INSERT INTO filings(cik,accession_number,period_of_report,filed_date) "
+                 "VALUES (?,?,?,?)", (cik, acc, period, filed))
+    return conn.execute("SELECT id FROM filings WHERE accession_number=?", (acc,)).fetchone()[0]
+
+
+def test_universe_tickers_current_quarter_ranked_funds(tmp_path):
+    _db_, conn = _db(tmp_path)
+    cq = adapter.current_quarter_date(conn)  # None when empty -> set explicitly below
+    cq = "2024-12-31"
+    # ranked fund 'r' holds AAA + BBB this quarter; unranked fund 'u' holds CCC
+    conn.execute("INSERT INTO filers(cik,name) VALUES ('r','Ranked'),('u','Unranked')")
+    conn.execute("INSERT INTO fund_rankings(fund_id,fund_name,rank,final_score,eligible) "
+                 "VALUES ('r','Ranked',1,100.0,1)")
+    fr = _add_filing(conn, "r", cq, "2025-02-10", "r1")
+    fu = _add_filing(conn, "u", cq, "2025-02-10", "u1")
+    for fid, c in [(fr, "CA"), (fr, "CB"), (fu, "CC"), (fr, "COPT")]:
+        pc = "Call" if c == "COPT" else None
+        conn.execute("INSERT INTO holdings(filing_id,cusip,name_of_issuer,value_thousands,shares,put_call) "
+                     "VALUES (?,?,?,?,?,?)", (fid, c, c, 100, 10, pc))
+    conn.execute("INSERT INTO securities(cusip,ticker,name) VALUES "
+                 "('CA','AAA','A'),('CB','BBB','B'),('CC','CCC','C'),('COPT','OPT','O')")
+    conn.commit()
+
+    tickers = fundamentals.universe_tickers(conn)
+    assert set(tickers) == {"AAA", "BBB"}   # ranked fund only; option excluded; unranked excluded
