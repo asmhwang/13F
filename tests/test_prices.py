@@ -119,6 +119,46 @@ def test_held_ticker_windows_equity_only_with_3yr_window(tmp_path):
     assert aapl["end"] == "2022-03-31"  # last quarter 2019-03-31 + 3yr
 
 
+def test_ingest_prices_fetches_logs_and_is_incremental(tmp_path):
+    db = tmp_path / "t.db"
+    _seed_holdings(db)
+
+    fake_rows = [
+        {"date": "2018-03-29", "close": 10.0, "adj_close": 9.5},
+        {"date": "2022-03-31", "close": 20.0, "adj_close": 19.0},
+    ]
+    with patch("pipeline.prices.fetch_prices", return_value=fake_rows) as m:
+        stats = prices.ingest_prices(db)
+    assert stats == {"fetched": 1, "skipped": 0, "failed": 0, "total": 1}
+    assert m.call_count == 1
+
+    conn = get_connection(db)
+    assert conn.execute("SELECT COUNT(*) FROM prices WHERE ticker='AAPL'").fetchone()[0] == 2
+    log = conn.execute("SELECT first_date, last_date, status FROM price_fetch_log WHERE ticker='AAPL'").fetchone()
+    assert (log[0], log[1], log[2]) == ("2018-03-29", "2022-03-31", "ok")
+
+    # Second run: window already covered -> skipped, no new fetch.
+    with patch("pipeline.prices.fetch_prices", return_value=fake_rows) as m2:
+        stats2 = prices.ingest_prices(db)
+    assert stats2["skipped"] == 1 and stats2["fetched"] == 0
+    m2.assert_not_called()
+
+
+def test_ingest_prices_logs_no_data_when_empty(tmp_path):
+    db = tmp_path / "t.db"
+    _seed_holdings(db)
+    with patch("pipeline.prices.fetch_prices", return_value=[]):
+        stats = prices.ingest_prices(db)
+    assert stats["fetched"] == 0
+    conn = get_connection(db)
+    status = conn.execute("SELECT status FROM price_fetch_log WHERE ticker='AAPL'").fetchone()[0]
+    assert status == "no_data"
+    # no_data tickers are not retried
+    with patch("pipeline.prices.fetch_prices") as m:
+        prices.ingest_prices(db)
+    m.assert_not_called()
+
+
 def test_store_prices_inserts_and_upserts(tmp_path):
     db = tmp_path / "t.db"
     conn = get_connection(db)

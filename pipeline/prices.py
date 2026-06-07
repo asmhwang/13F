@@ -136,6 +136,72 @@ def held_ticker_windows(conn: sqlite3.Connection) -> list[dict]:
     return out
 
 
+def _already_covered(conn: sqlite3.Connection, ticker: str, start: str, end: str) -> bool:
+    row = conn.execute(
+        "SELECT first_date, last_date, status FROM price_fetch_log WHERE ticker = ?",
+        (ticker,),
+    ).fetchone()
+    if not row:
+        return False
+    if row["status"] == "no_data":
+        return True                          # don't retry dead tickers
+    return (row["first_date"] is not None
+            and row["last_date"] is not None
+            and row["first_date"] <= start
+            and row["last_date"] >= end)
+
+
+def _log_fetch(conn: sqlite3.Connection, ticker: str,
+               first_date: str | None, last_date: str | None, status: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO price_fetch_log (ticker, first_date, last_date, status, fetched_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(ticker) DO UPDATE SET
+            first_date = excluded.first_date,
+            last_date  = excluded.last_date,
+            status     = excluded.status,
+            fetched_at = CURRENT_TIMESTAMP
+        """,
+        (ticker, first_date, last_date, status),
+    )
+    conn.commit()
+
+
+def ingest_prices(db_path: Path = DB_PATH, force: bool = False,
+                  limit: int | None = None) -> dict:
+    """
+    Fetch + store prices for every held equity ticker over its needed window.
+    Incremental: tickers already covered (or marked no_data) are skipped unless
+    force=True. Returns {fetched, skipped, failed, total}.
+    """
+    conn = get_connection(db_path)
+    init_schema(conn, db_path)
+    windows = held_ticker_windows(conn)
+    if limit:
+        windows = windows[:limit]
+    fetched = skipped = failed = 0
+    for w in windows:
+        t, start, end = w["ticker"], w["start"], w["end"]
+        if not force and _already_covered(conn, t, start, end):
+            skipped += 1
+            continue
+        try:
+            rows = fetch_prices(t, start, end)
+            if rows:
+                store_prices(conn, t, rows)
+                _log_fetch(conn, t, rows[0]["date"], rows[-1]["date"], "ok")
+                fetched += 1
+            else:
+                _log_fetch(conn, t, None, None, "no_data")
+            time.sleep(_RATE_SLEEP)
+        except Exception as exc:                # noqa: BLE001 — log and continue
+            print(f"  [ERROR] {t}: {exc}")
+            _log_fetch(conn, t, None, None, "error")
+            failed += 1
+    return {"fetched": fetched, "skipped": skipped, "failed": failed, "total": len(windows)}
+
+
 def store_prices(conn: sqlite3.Connection, ticker: str, rows: list[dict]) -> int:
     """Upsert price rows for one ticker. Returns the number of rows written."""
     conn.executemany(
