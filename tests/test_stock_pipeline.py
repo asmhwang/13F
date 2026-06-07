@@ -85,3 +85,28 @@ def test_signals_for_period(tmp_path):
     assert round(sig["XXX"]["net_change_pct"], 4) == 0.6
     # direction: both funds buyers of X -> buyers=2 sellers=0
     assert sig["XXX"]["buyers"] == 2 and sig["XXX"]["sellers"] == 0
+
+
+def test_range_position_52w(tmp_path):
+    _db_, conn = _db(tmp_path)
+    # 25 daily points within the trailing year: low 10, high 30, last (as-of) = 25.
+    # >= 20 points but < 252 -> usable range, partial=1.
+    pts = ([("2024-12-02", 10.0)]
+           + [(f"2024-12-{d:02d}", 20.0) for d in range(3, 26)]
+           + [("2024-12-26", 30.0), ("2024-12-27", 25.0)])
+    conn.executemany("INSERT INTO prices(ticker,date,close,adj_close) VALUES ('ZZZ',?,?,?)",
+                     [(d, p, p) for d, p in pts])
+    conn.commit()
+    pos, partial = stock_pipeline.range_position_52w(conn, "ZZZ", "2024-12-31")
+    assert round(pos, 4) == 0.75            # (25-10)/(30-10)
+    assert partial == 1                      # >=20 but < 252 trading days
+
+    # fewer than 20 trading days of data -> NULL position, partial=1
+    conn.execute("INSERT INTO prices(ticker,date,close,adj_close) VALUES ('FEW','2024-12-28',5,5.0)")
+    conn.commit()
+    pos2, partial2 = stock_pipeline.range_position_52w(conn, "FEW", "2024-12-31")
+    assert pos2 is None and partial2 == 1
+
+    # no prices -> NULL, partial 1
+    pos3, partial3 = stock_pipeline.range_position_52w(conn, "NONE", "2024-12-31")
+    assert pos3 is None and partial3 == 1
