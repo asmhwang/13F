@@ -248,3 +248,39 @@ def compute_turnover(conn: sqlite3.Connection) -> None:
             """,
             (cik, avg, mult, len(rates)))
     conn.commit()
+
+
+def compute_consistency(conn: sqlite3.Connection) -> None:
+    """Stage 6 — relative consistency: 1 - percent_rank(stdev of excess QPS).
+
+    Lower stdev = more consistent = higher score. Percentile is across all
+    funds that have a fund_tws row, so it must run after all of them are scored.
+    """
+    funds = [r[0] for r in conn.execute("SELECT fund_id FROM fund_tws").fetchall()]
+    stdevs: dict[str, float] = {}
+    for cik in funds:
+        vals = [r[0] for r in conn.execute(
+            "SELECT qps_excess FROM fund_quarterly_scores "
+            "WHERE fund_id = ? AND qps_excess IS NOT NULL", (cik,)).fetchall()]
+        stdevs[cik] = statistics.stdev(vals) if len(vals) > 1 else 0.0
+
+    n = len(stdevs)
+    ordered = sorted(stdevs.values())
+    for cik, sd in stdevs.items():
+        if n <= 1:
+            consistency = 1.0
+        else:
+            # PERCENT_RANK with ascending stdev: rank = #strictly-less + 1
+            rank = sum(1 for v in ordered if v < sd) + 1
+            percent_rank = (rank - 1) / (n - 1)
+            consistency = 1.0 - percent_rank
+        conn.execute(
+            """
+            INSERT INTO fund_consistency(fund_id, qps_stdev, consistency_score)
+            VALUES (?, ?, ?)
+            ON CONFLICT(fund_id) DO UPDATE SET
+                qps_stdev = excluded.qps_stdev,
+                consistency_score = excluded.consistency_score
+            """,
+            (cik, sd, consistency))
+    conn.commit()

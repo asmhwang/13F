@@ -234,3 +234,35 @@ def test_compute_turnover_mean_and_multiplier(tmp_path):
     assert round(row["avg_turnover_rate"], 4) == 0.1667    # mean(1/3, 0)
     assert round(row["turnover_multiplier"], 4) == 0.9167  # 1 - 0.1667*0.5
     assert row["quarter_pairs_measured"] == 2
+
+
+def test_compute_consistency_percentile(tmp_path):
+    _db_, conn = _db(tmp_path)
+    # three funds with distinct excess-QPS stdevs: 0, 0.1, 0.2
+    for cik, exc in [("f1", [0.1, 0.1, 0.1]),
+                     ("f2", [0.0, 0.1, 0.2]),
+                     ("f3", [0.0, 0.2, 0.4])]:
+        conn.execute(f"INSERT INTO filers(cik,name) VALUES ('{cik}','{cik}')")
+        conn.execute(f"INSERT INTO fund_tws(fund_id,tws,quarters_scored,"
+                     f"oldest_quarter_included,one_hit_wonder_flag,"
+                     f"best_quarter_contribution) VALUES ('{cik}',0.1,3,"
+                     f"'2018-03-31',0,0.2)")
+        for i, e in enumerate(exc):
+            conn.execute(
+                "INSERT INTO fund_quarterly_scores(fund_id,quarter_date,qps_raw,"
+                "qps_excess,benchmark_return,positions_included,"
+                "positions_excluded_null) VALUES (?,?,?,?,?,?,?)",
+                (cik, f"{2018+i}-03-31", e, e, 0.0, 1, 0))
+    conn.commit()
+
+    fund_pipeline.compute_consistency(conn)
+
+    res = {r["fund_id"]: r for r in conn.execute(
+        "SELECT fund_id, qps_stdev, consistency_score FROM fund_consistency").fetchall()}
+    assert round(res["f1"]["qps_stdev"], 4) == 0.0
+    assert round(res["f2"]["qps_stdev"], 4) == 0.1
+    assert round(res["f3"]["qps_stdev"], 4) == 0.2
+    # lowest stdev -> most consistent -> 1.0; highest -> 0.0; middle -> 0.5
+    assert round(res["f1"]["consistency_score"], 4) == 1.0
+    assert round(res["f2"]["consistency_score"], 4) == 0.5
+    assert round(res["f3"]["consistency_score"], 4) == 0.0
