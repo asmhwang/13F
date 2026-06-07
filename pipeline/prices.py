@@ -78,17 +78,35 @@ def _chart_url(symbol: str, start: str, end: str) -> str:
 
 
 def _http_get(url: str) -> requests.Response:
-    """GET with simple exponential backoff on 429."""
+    """GET with simple exponential backoff on 429, 5xx, and network errors."""
     resp = None
+    last_exc: Exception | None = None
     for attempt in range(_MAX_RETRIES + 1):
-        resp = requests.get(url, headers=_HEADERS, timeout=30)
+        try:
+            resp = requests.get(url, headers=_HEADERS, timeout=30)
+        except requests.RequestException as exc:
+            last_exc = exc
+            print(f"    [network error] {exc} — attempt {attempt + 1}/{_MAX_RETRIES + 1}")
+            if attempt < _MAX_RETRIES:
+                wait = 5 * (2 ** attempt)
+                time.sleep(wait)
+                continue
+            raise
         if resp.status_code == 429:
-            wait = 5 * (2 ** attempt)
-            print(f"    [429] Yahoo rate limit — waiting {wait}s")
-            time.sleep(wait)
-            continue
-        resp.raise_for_status()
-        return resp
+            print(f"    [429] Yahoo rate limit — waiting, attempt {attempt + 1}/{_MAX_RETRIES + 1}")
+            if attempt < _MAX_RETRIES:
+                wait = 5 * (2 ** attempt)
+                time.sleep(wait)
+                continue
+        elif resp.status_code >= 500:
+            print(f"    [{resp.status_code}] server error — attempt {attempt + 1}/{_MAX_RETRIES + 1}")
+            if attempt < _MAX_RETRIES:
+                wait = 5 * (2 ** attempt)
+                time.sleep(wait)
+                continue
+        else:
+            resp.raise_for_status()
+            return resp
     resp.raise_for_status()
     return resp
 
@@ -108,6 +126,22 @@ def _plus_three_years(d: str) -> str:
         return date(y + 3, m, day - 1).isoformat()
 
 
+def store_prices(conn: sqlite3.Connection, ticker: str, rows: list[dict]) -> int:
+    """Upsert price rows for one ticker. Returns the number of rows written."""
+    conn.executemany(
+        """
+        INSERT INTO prices (ticker, date, close, adj_close)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(ticker, date) DO UPDATE SET
+            close     = excluded.close,
+            adj_close = excluded.adj_close
+        """,
+        [(ticker, r["date"], r["close"], r["adj_close"]) for r in rows],
+    )
+    conn.commit()
+    return len(rows)
+
+
 def held_ticker_windows(conn: sqlite3.Connection) -> list[dict]:
     """
     For each equity ticker held by a tracked fund, the date window prices are
@@ -123,6 +157,7 @@ def held_ticker_windows(conn: sqlite3.Connection) -> list[dict]:
         JOIN filings f    ON f.id = h.filing_id
         JOIN securities s ON s.cusip = h.cusip
         WHERE s.ticker IS NOT NULL AND s.ticker <> ''
+          AND s.ticker GLOB '*[A-Za-z]*'
           AND (h.put_call IS NULL OR h.put_call = '')
           AND h.value_thousands > 0
         GROUP BY s.ticker
@@ -197,27 +232,33 @@ def ingest_benchmark(db_path: Path = DB_PATH) -> int:
     .. max period + 3yr, capped today) and upsert into the benchmark table.
     """
     conn = get_connection(db_path)
-    init_schema(conn, db_path)
-    span = conn.execute(
-        "SELECT MIN(period_of_report) AS lo, MAX(period_of_report) AS hi FROM filings"
-    ).fetchone()
-    if span["lo"] is None:
-        return 0
-    start = span["lo"]
-    end = min(_plus_three_years(span["hi"]), date.today().isoformat())
-    rows = fetch_prices(_BENCHMARK_SYMBOL, start, end)
-    conn.executemany(
-        """
-        INSERT INTO benchmark (date, adj_close) VALUES (?, ?)
-        ON CONFLICT(date) DO UPDATE SET adj_close = excluded.adj_close
-        """,
-        [(r["date"], r["adj_close"]) for r in rows],
-    )
-    conn.commit()
-    return len(rows)
+    try:
+        init_schema(conn, db_path)
+        span = conn.execute(
+            "SELECT MIN(period_of_report) AS lo, MAX(period_of_report) AS hi FROM filings"
+        ).fetchone()
+        if span["lo"] is None:
+            return 0
+        start = span["lo"]
+        end = min(_plus_three_years(span["hi"]), date.today().isoformat())
+        rows = fetch_prices(_BENCHMARK_SYMBOL, start, end)
+        conn.executemany(
+            """
+            INSERT INTO benchmark (date, adj_close) VALUES (?, ?)
+            ON CONFLICT(date) DO UPDATE SET adj_close = excluded.adj_close
+            """,
+            [(r["date"], r["adj_close"]) for r in rows],
+        )
+        conn.commit()
+        return len(rows)
+    finally:
+        conn.close()
 
 
 def _already_covered(conn: sqlite3.Connection, ticker: str, start: str, end: str) -> bool:
+    # Coverage is checked only via window endpoints (first_date/last_date), so
+    # this assumes Yahoo returns contiguous daily bars. A truncated prior fetch
+    # with interior gaps would still be treated as covered; recover with --force.
     row = conn.execute(
         "SELECT first_date, last_date, status FROM price_fetch_log WHERE ticker = ?",
         (ticker,),
@@ -257,46 +298,36 @@ def ingest_prices(db_path: Path = DB_PATH, force: bool = False,
     force=True. Returns {fetched, skipped, failed, total}.
     """
     conn = get_connection(db_path)
-    init_schema(conn, db_path)
-    windows = held_ticker_windows(conn)
-    if limit:
-        windows = windows[:limit]
-    fetched = skipped = failed = 0
-    for w in windows:
-        t, start, end = w["ticker"], w["start"], w["end"]
-        if not force and _already_covered(conn, t, start, end):
-            skipped += 1
-            continue
-        try:
-            rows = fetch_prices(t, start, end)
-            if rows:
-                store_prices(conn, t, rows)
-                _log_fetch(conn, t, rows[0]["date"], rows[-1]["date"], "ok")
-                fetched += 1
-            else:
-                _log_fetch(conn, t, None, None, "no_data")
-            time.sleep(_RATE_SLEEP)
-        except Exception as exc:                # noqa: BLE001 — log and continue
-            print(f"  [ERROR] {t}: {exc}")
-            _log_fetch(conn, t, None, None, "error")
-            failed += 1
-    return {"fetched": fetched, "skipped": skipped, "failed": failed, "total": len(windows)}
-
-
-def store_prices(conn: sqlite3.Connection, ticker: str, rows: list[dict]) -> int:
-    """Upsert price rows for one ticker. Returns the number of rows written."""
-    conn.executemany(
-        """
-        INSERT INTO prices (ticker, date, close, adj_close)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(ticker, date) DO UPDATE SET
-            close     = excluded.close,
-            adj_close = excluded.adj_close
-        """,
-        [(ticker, r["date"], r["close"], r["adj_close"]) for r in rows],
-    )
-    conn.commit()
-    return len(rows)
+    try:
+        init_schema(conn, db_path)
+        windows = held_ticker_windows(conn)
+        if limit:
+            windows = windows[:limit]
+        fetched = skipped = failed = 0
+        for w in windows:
+            t, start, end = w["ticker"], w["start"], w["end"]
+            # Tickers whose window end is clamped to today (still-open 3yr windows)
+            # will re-fetch each run because the last trading day is before today —
+            # this is intentional (keeps recent bars fresh).
+            if not force and _already_covered(conn, t, start, end):
+                skipped += 1
+                continue
+            try:
+                rows = fetch_prices(t, start, end)
+                if rows:
+                    store_prices(conn, t, rows)
+                    _log_fetch(conn, t, rows[0]["date"], rows[-1]["date"], "ok")
+                    fetched += 1
+                else:
+                    _log_fetch(conn, t, None, None, "no_data")
+                time.sleep(_RATE_SLEEP)
+            except Exception as exc:                # noqa: BLE001 — log and continue
+                print(f"  [ERROR] {t}: {exc}")
+                _log_fetch(conn, t, None, None, "error")
+                failed += 1
+        return {"fetched": fetched, "skipped": skipped, "failed": failed, "total": len(windows)}
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

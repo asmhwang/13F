@@ -1,8 +1,6 @@
 """Tests for pipeline.prices (Phase 1 price + benchmark ingest)."""
 from pathlib import Path
 
-import pytest
-
 from pipeline.database import get_connection
 from pipeline import prices
 
@@ -215,6 +213,31 @@ def test_ingest_prices_logs_no_data_when_empty(tmp_path):
     with patch("pipeline.prices.fetch_prices") as m:
         prices.ingest_prices(db)
     m.assert_not_called()
+
+
+def test_held_ticker_windows_excludes_letterless_tickers(tmp_path):
+    """Tickers with no ASCII letter (e.g. '016') must be filtered out."""
+    db = tmp_path / "t.db"
+    init_db(db)
+    conn = get_connection(db)
+    conn.execute("INSERT INTO filers(cik, name) VALUES ('222','Fund B')")
+    conn.execute("INSERT INTO filings(cik, accession_number, period_of_report, filed_date) "
+                 "VALUES ('222','b1','2020-03-31','2020-05-10')")
+    fid = conn.execute("SELECT id FROM filings WHERE accession_number='b1'").fetchone()[0]
+    # Real ticker
+    conn.execute("INSERT INTO securities(cusip,ticker,name) VALUES ('C_MSFT','MSFT','Microsoft')")
+    # Junk ticker — all digits, no letters
+    conn.execute("INSERT INTO securities(cusip,ticker,name) VALUES ('C_JUNK','016','Junk CUSIP')")
+    conn.execute("INSERT INTO holdings(filing_id,cusip,name_of_issuer,value_thousands,shares,put_call) "
+                 "VALUES (?, 'C_MSFT','Microsoft',2000,20,NULL)", (fid,))
+    conn.execute("INSERT INTO holdings(filing_id,cusip,name_of_issuer,value_thousands,shares,put_call) "
+                 "VALUES (?, 'C_JUNK','Junk',500,5,NULL)", (fid,))
+    conn.commit()
+    prices.init_schema(conn, db)
+    windows = prices.held_ticker_windows(conn)
+    tickers = {w["ticker"] for w in windows}
+    assert "016" not in tickers
+    assert "MSFT" in tickers
 
 
 def test_store_prices_inserts_and_upserts(tmp_path):
