@@ -91,3 +91,21 @@ CREATE TABLE IF NOT EXISTS fund_rankings (
     eligible                  INTEGER,
     fail_reason               TEXT
 );
+
+-- ---- Phase 3: fundamentals (current quarter) -------------------------------
+CREATE TABLE IF NOT EXISTS fundamentals (
+    ticker            TEXT NOT NULL,
+    as_of_date        DATE NOT NULL,
+    market_cap        REAL,
+    shares_out        REAL,
+    pe_ratio          REAL,
+    pe_available      INTEGER,
+    gross_margin_pct  REAL,
+    source            TEXT,
+    PRIMARY KEY (ticker, as_of_date)
+);
+
+CREATE TABLE IF NOT EXISTS sectors (
+    ticker  TEXT PRIMARY KEY,
+    sector  TEXT NOT NULL
+);
