@@ -142,3 +142,22 @@ def test_sector_adjust():
     # Tech mean = 2.0 ; Energy mean = 5.0
     assert round(adj["AAA"], 4) == -1.0 and round(adj["BBB"], 4) == 1.0
     assert round(adj["CCC"], 4) == 0.0
+
+
+def test_normalize_unit_range():
+    assert stock_pipeline._normalize({"a": 10.0, "b": 20.0, "c": 30.0}) == {"a": 0.0, "b": 0.5, "c": 1.0}
+    assert stock_pipeline._normalize({"a": 5.0}) == {"a": 1.0}     # single -> 1.0
+
+
+def test_confidence_buckets_by_thirds():
+    # three stocks with strictly increasing confidence inputs -> Low/Med/High
+    universe = {
+        "LO":  {"weighted_holder_score": 1.0, "avg_tenure_score": 1.0,
+                "avg_relative_size": 0.0, "direction_agreement": 0.0, "data_quality_score": 0.0},
+        "MID": {"weighted_holder_score": 2.0, "avg_tenure_score": 2.0,
+                "avg_relative_size": 0.5, "direction_agreement": 0.5, "data_quality_score": 0.5},
+        "HI":  {"weighted_holder_score": 3.0, "avg_tenure_score": 3.0,
+                "avg_relative_size": 1.0, "direction_agreement": 1.0, "data_quality_score": 1.0},
+    }
+    flags = stock_pipeline.confidence_flags(universe)
+    assert flags["HI"] == "High" and flags["MID"] == "Medium" and flags["LO"] == "Low"
