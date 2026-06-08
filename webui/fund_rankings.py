@@ -18,7 +18,7 @@ def _fund_row_html(r: pd.Series) -> str:
         '<div class="rk-row" style="grid-template-columns:44px 2.4fr 1.4fr 1fr 1fr 1fr 1fr">'
         f'<div class="rk-rank">{int(r["rank"])}</div>'
         f'<div><div class="rk-name">{_html.escape(str(r["fund_name"]))}{chip}</div>'
-        f'<div class="rk-sub">{c.fmt_money((r.get("avg_aum") or 0) * 1000)} avg AUM</div></div>'
+        f'<div class="rk-sub">{c.fmt_money(r.get("avg_aum"))} avg AUM</div></div>'
         f'<div><div class="rk-name">{score:.0f}</div>{c.score_bar_html(score)}</div>'
         f'<div><div class="rk-sub">Positions</div><div>{int(r.get("avg_position_count") or 0)}</div></div>'
         f'<div><div class="rk-sub">Quarters</div><div>{int(r.get("quarters_of_data") or 0)}</div></div>'
