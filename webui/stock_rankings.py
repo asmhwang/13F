@@ -11,12 +11,18 @@ from webui import data
 
 
 def _stock_row_html(r: pd.Series) -> str:
+    # The filtered table is intentionally a column subset of the raw table, so
+    # net_change_pct / avg_tenure are absent there — Series.get() yields None and
+    # the cells render as "—"/"·" rather than raising.
     flag = str(r.get("confidence_flag") or "")
     badge = c.badge_html(flag, c.confidence_color(flag)) if flag else ""
     nc = r.get("net_change_pct")
     nc_color = c.net_change_color(nc)
     arrow = "▲" if (nc or 0) > 0 else ("▼" if (nc or 0) < 0 else "·")
     score = r.get("sector_adjusted_score")
+    score_txt = "—" if score is None else f"{score:.2f}"
+    tenure = r.get("avg_tenure")
+    tenure_txt = "—" if tenure is None else f"{float(tenure):.1f}q"
     return (
         '<div class="rk-row" style="grid-template-columns:44px 1.4fr 2fr 1.2fr 1fr 1fr 1.1fr 1fr">'
         f'<div class="rk-rank">{int(r["rank"])}</div>'
@@ -24,12 +30,12 @@ def _stock_row_html(r: pd.Series) -> str:
         f'<div><div class="rk-sub">{_html.escape(str(r.get("company_name") or ""))}</div>'
         f'<div class="rk-sub">{_html.escape(str(r.get("sector") or ""))}</div></div>'
         f'<div>{badge}</div>'
-        f'<div><div class="rk-sub">Score</div><div>{("—" if score is None else f"{score:.2f}")}</div></div>'
+        f'<div><div class="rk-sub">Score</div><div>{score_txt}</div></div>'
         f'<div><div class="rk-sub">Funds</div><div>{int(r.get("holder_count") or 0)}</div></div>'
         f'<div><div class="rk-sub">Net change</div>'
         f'<div style="color:{nc_color}">{arrow} {c.fmt_pct(nc)}</div></div>'
         f'<div><div class="rk-sub">Avg tenure</div>'
-        f'<div>{("—" if r.get("avg_tenure") is None else f"{float(r.get("avg_tenure")):.1f}q")}</div></div>'
+        f'<div>{tenure_txt}</div></div>'
         '</div>'
     )
 

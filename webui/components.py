@@ -97,7 +97,7 @@ def kpi_strip(cards: list[tuple[str, str]]) -> None:
 
 def score_bar_html(score: float, max_score: float = 100.0) -> str:
     pct = max(0.0, min(100.0, (score / max_score) * 100.0)) if max_score else 0.0
-    return (f'<div class="rk-bar"><i style="width:{pct:.0f}%"></i></div>')
+    return f'<div class="rk-bar"><i style="width:{pct:.0f}%"></i></div>'
 
 
 def badge_html(text: str, color: str) -> str:
