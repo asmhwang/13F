@@ -67,3 +67,53 @@ def apply_filters_sort(df: pd.DataFrame, filters: dict, sort_col: str | None = N
     if sort_col and sort_col in out.columns:
         out = out.sort_values(sort_col, ascending=ascending)
     return out.reset_index(drop=True)
+
+
+# ----------------------------- streamlit render helpers -----------------------------
+import html as _html
+
+import streamlit as st
+
+
+def hero(title: str, subtitle: str, staleness: str = "") -> None:
+    stale = f'<div class="rk-stale">{_html.escape(staleness)}</div>' if staleness else ""
+    st.markdown(
+        f'<div class="rk-wrap"><div class="rk-hero"><h1>{_html.escape(title)}</h1>'
+        f'<p class="sub">{_html.escape(subtitle)}</p>{stale}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def kpi_strip(cards: list[tuple[str, str]]) -> None:
+    """cards = [(value, label), ...]"""
+    inner = "".join(
+        f'<div class="rk-kpi"><div class="v">{_html.escape(str(v))}</div>'
+        f'<div class="l">{_html.escape(str(l))}</div></div>'
+        for v, l in cards
+    )
+    st.markdown(f'<div class="rk-wrap"><div class="rk-kpis">{inner}</div></div>',
+                unsafe_allow_html=True)
+
+
+def score_bar_html(score: float, max_score: float = 100.0) -> str:
+    pct = max(0.0, min(100.0, (score / max_score) * 100.0)) if max_score else 0.0
+    return (f'<div class="rk-bar"><i style="width:{pct:.0f}%"></i></div>')
+
+
+def badge_html(text: str, color: str) -> str:
+    return f'<span class="rk-badge" style="background:{color}">{_html.escape(text)}</span>'
+
+
+def ranking_list(rows_html: list[str], stagger_ms: int = 50) -> None:
+    """Render pre-built row HTML with staggered fade-in."""
+    parts = []
+    for i, r in enumerate(rows_html):
+        delay = i * stagger_ms
+        parts.append(r.replace("<div class=\"rk-row\"",
+                               f'<div class="rk-row" style="animation-delay:{delay}ms"', 1))
+    st.markdown(f'<div class="rk-wrap">{"".join(parts)}</div>', unsafe_allow_html=True)
+
+
+def empty_card(message: str) -> None:
+    st.markdown(f'<div class="rk-wrap"><div class="rk-empty">{_html.escape(message)}</div></div>',
+                unsafe_allow_html=True)
