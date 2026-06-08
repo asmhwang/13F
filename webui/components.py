@@ -105,12 +105,22 @@ def badge_html(text: str, color: str) -> str:
 
 
 def ranking_list(rows_html: list[str], stagger_ms: int = 50) -> None:
-    """Render pre-built row HTML with staggered fade-in."""
+    """Render pre-built row HTML with staggered fade-in.
+
+    The per-row `animation-delay` is merged into the row's existing `style="..."`
+    (its grid-template-columns). Adding a *second* style attribute would be invalid
+    HTML — browsers keep only the first — so we prepend into the first style instead.
+    """
     parts = []
     for i, r in enumerate(rows_html):
         delay = i * stagger_ms
-        parts.append(r.replace("<div class=\"rk-row\"",
-                               f'<div class="rk-row" style="animation-delay:{delay}ms"', 1))
+        anim = f"animation-delay:{delay}ms;"
+        if 'style="' in r:
+            r = r.replace('style="', f'style="{anim}', 1)
+        else:
+            r = r.replace('<div class="rk-row"',
+                          f'<div class="rk-row" style="{anim}"', 1)
+        parts.append(r)
     st.markdown(f'<div class="rk-wrap">{"".join(parts)}</div>', unsafe_allow_html=True)
 
 
