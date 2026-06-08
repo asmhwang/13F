@@ -1,12 +1,14 @@
 # 13F Ranking Feature — Build Status & Resume Guide
 
-**Last updated:** 2026-06-07
-**Branch:** built on `feat/13f-ranking`, merged to `main`.
+**Last updated:** 2026-06-08
+**Branch:** P1–P4 on `feat/13f-ranking`, P5 on `feat/13f-website` — both merged to `main` (latest merge `fba117c`), pushed to `origin`.
 **Resume anchor:** this file. Read it first after clearing chat.
 
-This feature turns ingested 13F filings into two ranked outputs — **Fund Rankings** (which small, concentrated funds pick well long-term) and **Stock Rankings** (which stocks those funds are most convicted on) — both as raw + filtered views, eventually shown on the Streamlit site.
+This feature turns ingested 13F filings into two ranked outputs — **Fund Rankings** (which small, concentrated funds pick well long-term) and **Stock Rankings** (which stocks those funds are most convicted on) — both as raw + filtered views, shown on the Streamlit site.
 
-Source spec: `docs/superpowers/specs/2026-06-07-13f-ranking-design.md`
+**Status in one line: backend (P1–P4) + website (P5) are DONE and live; price/fundamental data is fully backfilled. The ONLY thing left is adding more small filers so more than one fund ranks.**
+
+Source specs: `docs/superpowers/specs/2026-06-07-13f-ranking-design.md`, `docs/superpowers/specs/2026-06-07-13f-rankings-website-design.md`
 Per-phase plans: `docs/superpowers/plans/2026-06-07-13f-*.md`
 
 ---
@@ -15,14 +17,14 @@ Per-phase plans: `docs/superpowers/plans/2026-06-07-13f-*.md`
 
 For each phase: **brainstorm → design spec → implementation plan (TDD, bite-sized) → subagent-driven execution** (one implementer subagent, then a spec-compliance review subagent, then an opus code-quality review subagent, then a fix pass). Every phase ends green with per-task commits.
 
-Phases are independent ships, dependency-ordered:
-`P1 prices → P2 fund ranking → P3 fundamentals → P4 stock ranking → P5 website`.
+Phases are independent ships, dependency-ordered (ALL DONE):
+`P1 prices ✅ → P2 fund ranking ✅ → P3 fundamentals ✅ → P4 stock ranking ✅ → P5 website ✅`.
 
 ---
 
-## What's DONE (P1–P4, backend complete) ✅
+## What's DONE (P1–P5, backend + website complete) ✅
 
-All on `feat/13f-ranking`, 38 commits, **55 tests passing**, no new paid services (all free/no-key or keys already in `.env`).
+P1–P4 on `feat/13f-ranking` (38 commits); P5 on `feat/13f-website` (14 commits). **65 tests passing.** No new paid services (all free/no-key or keys already in `.env`). Only new dep across the whole feature: `numpy>=1.26`.
 
 ### P1 — Price + benchmark ingest  `pipeline/prices.py`
 - Yahoo v8 chart endpoint (keyless), adjusted close, deep history. Benchmark = `^SP500TR` (S&P 500 total return).
@@ -42,22 +44,31 @@ All on `feat/13f-ranking`, 38 commits, **55 tests passing**, no new paid service
 - Tables: `stock_signals`, `stock_confidence`, `stock_rankings_raw`, `stock_rankings_filtered`. CLI: `python3 -m pipeline.scoring.stock_pipeline`.
 - Only new dependency in the whole feature: `numpy>=1.26`.
 
+### P5 — Website (Apple-flavored Streamlit pages)  `webui/`
+- New isolated package: `webui/data.py` (pure SQL→DataFrame queries + `@st.cache_data` wrappers), `webui/components.py` (pure fmt/color/filter helpers + render helpers), `webui/theme.py` (scoped `.rk-` CSS + Emil-Kowalski motion), `webui/fund_rankings.py`, `webui/stock_rankings.py`.
+- **Fund Rankings page:** hero + staleness, numeric KPI strip, score/sort filters, animated ranking list, "Inspect a fund" → `st.dialog` modal (excess-QPS Plotly chart + turnover).
+- **Stock Rankings page:** Raw / Filtered tabs, sector/confidence filters, confidence badges, green/red net-change, "Inspect a stock" → modal (market cap / P/E / 52wk / margin + holders table). Filtered tab shows a graceful empty-state.
+- Wired into `app.py` (two `st.radio` views + dispatch + sidebar filter guard + `theme.inject()`); recalc chain appended to `refresh.sh`/`.bat` (`ingest → CUSIPs → prices → fundamentals → fund → stock`).
+- Design pass applied **emil-design-eng** (capped stagger, gated hover, sub-400ms eased entries, reduced-motion), **impeccable** (numeric KPIs, tabular figures, balanced hero, lighter cards), **taste-skill** (killed AI-purple chip, single Apple-blue accent). Verified via headless-Chrome screenshot + Streamlit `AppTest`.
+- Tests: `tests/test_webui_data.py`, `tests/test_webui_components.py` (10 new). The 3 existing views (Single Filer, Cross-Filer, Conviction Scores) are untouched.
+- **Run the site:** `streamlit run app.py` → pick "Fund Rankings" / "Stock Rankings" in the sidebar.
+
+### Operational data backfill — DONE (2026-06-08)
+Ran the full chain `prices → fundamentals → fund_pipeline → stock_pipeline`:
+- **Price coverage 21.8% → 98.2%** (9,914 tickers, ~20.6M rows; 2,149 failed = delisted/FIGI-junk 404s, expected).
+- Fundamentals: 22 tickers (the ranked-fund universe), all with sector/market-cap/P/E/margin.
+- Stock raw rankings are now **regression-backed with real market caps** (no more conviction fallback).
+
 ---
 
-## What's LEFT
+## What's LEFT (one thing)
 
-### P5 — Website (the only remaining phase) ⏳
-Wire the result tables into `app.py` as two Streamlit pages (currently `app.py` has **no** `fund_rankings`/`stock_*` readers):
-- **Fund Rankings page:** table (Rank, Fund, Score, Avg AUM, Positions, Quarters, Turnover), filters (score/AUM/positions), sort, fund detail (holdings + historical QPS chart + turnover history), score tooltip (3 components), staleness label.
-- **Stock Rankings page:** Raw / Filtered tabs, table (Rank, Ticker, Company, Sector, Score, Confidence, #Funds, Net Change, Avg Tenure), net-change color (green buy / red sell), confidence badge, filters (sector/confidence/market-cap), sort, stock detail (which funds hold it + weight + quarters), staleness disclaimer.
-- Wire the pipeline into `refresh.sh`/`refresh.bat` + the app refresh action (recalc order: ingest → resolve CUSIPs → prices → fundamentals → fund pipeline → stock pipeline).
+**Add more small filers.** Everything else is done. The rankings still show **1 fund (Baupost)** and an **empty filtered stock list** — not a bug, a data-population gap:
+- 30 of the 31 seed filers fail the "small concentrated fund" weed (single position > $100M, or > 30 positions, or < 5yr history, or inactive). Only **Baupost** passes.
+- With 1 ranked fund, every stock has `holder_count = 1`, so the filtered gate (`holder_count ≥ 3`) yields **0** by construction. The other filtered gates already pass (mcap 300M–4B: 5 stocks, confidence≠Low: 15, 52wk-range 0.1–0.9: 17).
+- **To unblock:** ingest ≥2 more genuinely small, concentrated funds (search EDGAR or supply CIKs) → re-run `fund_pipeline` then `stock_pipeline` (or just `bash refresh.sh`). Once ≥3 funds rank and ≥3 hold the same stock, multi-fund signals + the filtered tab populate.
 
-### Operational data runs (not code — make the rankings real)
-Rankings are currently **sparse/thin** (see Data Reality). To populate real data:
-1. `python3 -m pipeline.prices`  — **full price backfill** (~12k tickers × ~0.5s ≈ 2–3 hrs, hits Yahoo a lot). Only ~20 tickers + the benchmark are loaded so far.
-2. `python3 -m pipeline.fundamentals`  — full fundamentals for the universe (only 3 tickers loaded via a `--limit` smoke so far).
-3. Re-run `fund_pipeline` then `stock_pipeline`.
-4. Add more **small** filers (the 31 seed filers are mostly large institutions that fail the "small concentrated fund" weed).
+Optional alternative (no new filers): the filtered `holder_count ≥ 3` threshold is a spec-documented "revisit after first run" knob — lowering it to 1 in `pipeline/scoring/stock_pipeline.py` would surface a filtered list against the single fund immediately.
 
 ---
 
@@ -74,12 +85,14 @@ Rankings are currently **sparse/thin** (see Data Reality). To populate real data
 
 ---
 
-## Data reality (why output looks thin — NOT bugs)
+## Data reality (post-backfill 2026-06-08 — what's real, what's still thin)
 
-- Only **1 fund passes weeding: Baupost Group** (`cik 1061768`). 23 of 31 seed filers fail `position_too_large`, 5 `inactive`, 2 `too_many_positions` — they're large institutions, not the "small concentrated funds" the spec targets.
-- With 1 ranked fund: stock universe = Baupost's ~22 holdings; the regression hits its fund_conviction fallback (~11 priced returns, < 8 threshold gets... actually 1 training row); `stock_rankings_filtered` = 0 (the `holder_count ≥ 3` filter needs ≥3 funds, and `market_cap` is NULL for most until full fundamentals run).
-- Coverage is ~22% because only ~20 tickers are priced AND only 36% of CUSIPs resolve.
-- **All of this is correct given the current data.** The math is verified on fixtures; real rankings need the operational data runs above + more small filers.
+- **Prices: real.** 98.2% value-weighted coverage (9,914 tickers, ~20.6M rows). The stock regression now trains on real 3yr returns (no more fund_conviction fallback).
+- **Fundamentals: real** for the 22-stock universe (sector, market cap, P/E, gross margin all populated).
+- **Still 1 ranked fund: Baupost Group** (`cik 1061768`). 30 of 31 seed filers fail the small-concentrated weed (`position_too_large` / `too_many_positions` / `inactive` / `insufficient_history`). This is the **only** remaining gap — see "What's LEFT".
+- **`stock_rankings_filtered` = 0** purely because `holder_count ≥ 3` is impossible with 1 fund (every stock has holder_count = 1). NOT market_cap (now populated) and NOT prices (now 98%).
+- CUSIP resolution ~36% (15,892 / 44,450 securities have tickers) — many are bonds/foreign/expired; widening it is optional, not blocking.
+- **All correct given the data.** Adding small filers is the single lever that makes fund + filtered-stock rankings rich.
 
 ---
 
@@ -94,10 +107,14 @@ Rankings are currently **sparse/thin** (see Data Reality). To populate real data
 
 ## How to resume after clearing chat
 
-1. `git checkout main && git pull` (the feature is merged here). Latest feature commits are the P1–P4 work; this file is the index.
-2. Re-read this file + `docs/superpowers/specs/2026-06-07-13f-ranking-design.md`.
-3. **To build P5:** brainstorm/spec the website page wiring, then plan, then subagent-driven execution (same process). `app.py` is ~1,300 lines; the new pages plug into its existing `st.radio` view switch and `@st.cache_data` loaders.
-4. **To make data real first:** run the three operational commands under "Operational data runs", then re-run the fund + stock pipelines, then build P5 against populated tables.
-5. Memory: a MemPalace `13F-platform` wing (rooms `decisions`, `backend`) has per-phase drawers with full detail if needed.
+1. `git checkout main && git pull` (everything is merged + pushed; this file is the index).
+2. Re-read this file. Specs: `specs/2026-06-07-13f-ranking-design.md` (backend) + `specs/2026-06-07-13f-rankings-website-design.md` (website).
+3. **See it run:** `streamlit run app.py` → sidebar "Fund Rankings" / "Stock Rankings".
+4. **The one open task — add small filers** (makes rankings multi-fund + fills the filtered tab):
+   - Find ≥2 genuinely small, concentrated 13F filers (single position < $100M, ≤ 30 positions, ≥ 5yr history, filed most recent quarter). Search EDGAR via `python3 -m pipeline.edgar` helpers or supply CIKs.
+   - Ingest them (`pipeline.ingest`), then `bash refresh.sh` (runs CUSIPs → prices → fundamentals → fund → stock). Prices/fundamentals are incremental, so this is fast now.
+   - Re-open the site; fund rankings + filtered stocks populate once ≥3 funds rank.
+   - Alternative with no new filers: lower the filtered `holder_count ≥ 3` knob in `pipeline/scoring/stock_pipeline.py` to surface a filtered list against Baupost alone.
+5. Memory: a MemPalace `13F-platform` wing (rooms `decisions`, `backend`) has per-phase + P5 + backfill drawers with full detail.
 
-**Test everything still green:** `python3 -m pytest -q` → expect 55 passed.
+**Test everything still green:** `python3 -m pytest -q` → expect **65 passed**.
