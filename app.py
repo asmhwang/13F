@@ -23,6 +23,10 @@ from pipeline.database import DB_PATH, ensure_indexes, get_connection
 from pipeline.edgar import search_filers_by_name
 from pipeline.queries import conviction_scores as _conviction_scores
 
+from webui import theme as rk_theme
+from webui.fund_rankings import render_fund_rankings
+from webui.stock_rankings import render_stock_rankings
+
 # Thread-safe job store for background ingest operations
 _ingest_jobs: dict[str, dict] = {}
 _ingest_lock = threading.Lock()
@@ -737,6 +741,7 @@ def load_conviction_scores(period: str, min_filers: int) -> pd.DataFrame:
 # ────────────────────────────────────────────────────────────────────────────────
 
 inject_css()
+rk_theme.inject()
 ensure_indexes()
 
 if "search_results" not in st.session_state:
@@ -790,12 +795,14 @@ with st.sidebar:
     st.markdown('<div class="sb-sec">View</div>', unsafe_allow_html=True)
     view = st.radio(
         "view",
-        ["Single Filer", "Cross-Filer Overview", "Conviction Scores"],
+        ["Single Filer", "Cross-Filer Overview", "Conviction Scores",
+         "Fund Rankings", "Stock Rankings"],
         index=0,
         label_visibility="collapsed",
     )
 
-    st.markdown('<div class="sb-sec">Filters</div>', unsafe_allow_html=True)
+    if view not in ("Fund Rankings", "Stock Rankings"):
+        st.markdown('<div class="sb-sec">Filters</div>', unsafe_allow_html=True)
 
     if view == "Single Filer":
         filer_options = dict(zip(filers_df["name"], filers_df["cik"]))
@@ -812,7 +819,7 @@ with st.sidebar:
         older_periods   = [p for p in filer_periods if p < selected_period]
         if older_periods:
             compare_period = st.selectbox("Compare to (QoQ)", older_periods, index=0)
-    else:
+    elif view not in ("Fund Rankings", "Stock Rankings"):
         selected_period = st.selectbox("Period", periods)
 
     if view == "Conviction Scores":
@@ -1281,3 +1288,9 @@ elif view == "Cross-Filer Overview":
         use_container_width=True,
         hide_index=True,
     )
+
+elif view == "Fund Rankings":
+    render_fund_rankings()
+
+elif view == "Stock Rankings":
+    render_stock_rankings()
