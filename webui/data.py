@@ -115,3 +115,59 @@ def stock_holders(ticker: str, conn: sqlite3.Connection | None = None) -> pd.Dat
         """,
         c, params=(ticker, ticker),
     )
+
+
+# ----------------------------- streamlit cache wrappers -----------------------------
+
+@st.cache_data(ttl=300)
+def load_fund_rankings() -> pd.DataFrame:
+    conn = get_connection()
+    try:
+        return fund_rankings(conn)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=300)
+def load_fund_quarterly_scores(fund_id: str) -> pd.DataFrame:
+    conn = get_connection()
+    try:
+        return fund_quarterly_scores(fund_id, conn)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=300)
+def load_fund_turnover(fund_id: str) -> pd.DataFrame:
+    conn = get_connection()
+    try:
+        return fund_turnover(fund_id, conn)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=300)
+def load_stock_rankings(kind: str = "raw") -> pd.DataFrame:
+    conn = get_connection()
+    try:
+        return stock_rankings(kind, conn)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=300)
+def load_stock_holders(ticker: str) -> pd.DataFrame:
+    conn = get_connection()
+    try:
+        return stock_holders(ticker, conn)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=300)
+def load_rankings_meta() -> dict:
+    conn = get_connection()
+    try:
+        return rankings_meta(conn)
+    finally:
+        conn.close()
