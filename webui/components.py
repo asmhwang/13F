@@ -113,7 +113,9 @@ def ranking_list(rows_html: list[str], stagger_ms: int = 50) -> None:
     """
     parts = []
     for i, r in enumerate(rows_html):
-        delay = i * stagger_ms
+        # Cap the cascade: past ~8 rows a per-row delay makes a long list feel
+        # slow to settle (Emil), so the stagger plateaus instead of growing.
+        delay = min(i, 8) * stagger_ms
         anim = f"animation-delay:{delay}ms;"
         if 'style="' in r:
             r = r.replace('style="', f'style="{anim}', 1)

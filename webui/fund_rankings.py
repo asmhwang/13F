@@ -65,10 +65,10 @@ def render_fund_rankings() -> None:
         return
 
     median = df["final_score"].median()
-    top = df.iloc[0]["fund_name"]
+    top_score = df.iloc[0]["final_score"]
     c.kpi_strip([
         (str(len(df)), "Eligible funds"),
-        (top, "Top fund"),
+        (f"{top_score:.0f}", "Top score"),
         (f"{median:.0f}", "Median score"),
         (str(int(df["quarters_of_data"].max() or 0)), "Max quarters"),
     ])
