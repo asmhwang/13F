@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import sys
+from contextlib import closing
 from pathlib import Path
 
 # Allow running as `python pipeline/ingest.py` from repo root
@@ -55,7 +56,7 @@ def ingest_filer(
     filer_name = submissions.get("name", "Unknown")
     print(f"  Filer: {filer_name}")
 
-    with database.get_connection(db_path) as conn:
+    with closing(database.get_connection(db_path)) as conn, conn:
         database.upsert_filer(conn, cik.lstrip("0") or "0", filer_name)
 
     # ---- filing list ----
@@ -78,7 +79,7 @@ def ingest_filer(
 
     # Skip filings already in the DB (unless --force)
     if not force:
-        with database.get_connection(db_path) as conn:
+        with closing(database.get_connection(db_path)) as conn:
             filings = [f for f in filings if not _already_ingested(conn, f["accession_number"])]
         if not filings:
             print("  All filings already ingested. Use --force to re-ingest.")
@@ -134,8 +135,18 @@ def ingest_filer(
 
         print(f"    Parsed {len(holdings)} holdings")
 
+        # Amendments: RESTATEMENT replaces the original information table;
+        # NEW HOLDINGS only adds positions. Read the type from the cover page
+        # (or the document itself for legacy text filings) so query-time
+        # resolution (effective_filings) can union instead of replace.
+        amendment_type = None
+        if "/A" in rtype:
+            amendment_type = (edgar.get_amendment_type(cik_bare, acc)
+                              or edgar.parse_amendment_type(xml_text))
+            print(f"    Amendment type: {amendment_type or 'unknown'}")
+
         # Persist
-        with database.get_connection(db_path) as conn:
+        with closing(database.get_connection(db_path)) as conn, conn:
             filing_id = database.insert_filing(
                 conn,
                 cik=cik_bare,
@@ -144,12 +155,18 @@ def ingest_filer(
                 filed_date=filed,
                 report_type=rtype,
                 raw_url=xml_url,
+                amendment_type=amendment_type,
             )
             conn.execute("DELETE FROM holdings WHERE filing_id = ?", (filing_id,))
             database.insert_holdings(conn, filing_id, holdings)
 
         total_value = sum(h["value_thousands"] for h in holdings)
         print(f"    Stored filing_id={filing_id}  AUM≈${total_value/1_000:,.0f}M")
+
+    # Resolve which filings represent each (cik, period) now that amendments
+    # and their types are stored.
+    with closing(database.get_connection(db_path)) as conn:
+        database.rebuild_effective_filings(conn, cik=cik_bare)
 
 
 def main() -> None:
