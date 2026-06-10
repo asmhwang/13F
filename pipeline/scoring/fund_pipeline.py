@@ -32,15 +32,21 @@ def _ph(ids: list[int]) -> str:
     return ",".join("?" * len(ids))
 
 
-def weed_funds(conn: sqlite3.Connection) -> None:
-    """Stage 1 — populate fund_eligibility for every filer."""
-    cq = adapter.current_quarter_date(conn)
-    five_years_ago = conn.execute("SELECT date('now', '-5 years')").fetchone()[0]
+def weed_funds(conn: sqlite3.Connection, as_of: str | None = None) -> None:
+    """Stage 1 — populate fund_eligibility for every filer.
+
+    as_of (optional, point-in-time): consider only filings with
+    period_of_report <= as_of and measure history relative to as_of."""
+    cq = adapter.current_quarter_date(conn, as_of)
+    five_years_ago = conn.execute(
+        "SELECT date(COALESCE(?, 'now'), '-5 years')", (as_of,)).fetchone()[0]
     funds = conn.execute("SELECT cik FROM filers").fetchall()
     for (cik,) in funds:
         span = conn.execute(
             "SELECT MIN(period_of_report), MAX(period_of_report) "
-            "FROM filings WHERE cik = ?", (cik,)).fetchone()
+            "FROM filings WHERE cik = ? "
+            "AND period_of_report <= COALESCE(?, '9999-12-31')",
+            (cik, as_of)).fetchone()
         first_q, last_q = span[0], span[1]
         npos = maxval = None
         ids = adapter.effective_filing_ids(conn, cik, cq) if cq else []
@@ -89,19 +95,24 @@ def _is_resolved_ticker(ticker: str | None) -> bool:
     return not any(ch in "0123456789" for ch in ticker)
 
 
-def compute_holding_returns(conn: sqlite3.Connection) -> None:
+def compute_holding_returns(conn: sqlite3.Connection, as_of: str | None = None) -> None:
     """Stage 2 — per-holding 3yr forward return for eligible funds.
+
+    as_of (optional): score only quarters whose 3yr window closed by as_of —
+    point-in-time semantics for backtesting.
 
     Holdings come from the effective filing set (base + NEW HOLDINGS
     amendments); the as-of date is the ORIGINAL filing's filed_date — an
     amendment filed years later must not shift the return window.
     """
-    today = date.today().isoformat()
+    today = as_of or date.today().isoformat()
     eligible = [r[0] for r in conn.execute(
         "SELECT fund_id FROM fund_eligibility WHERE eligible = 1").fetchall()]
     for cik in eligible:
         periods = conn.execute(
-            "SELECT DISTINCT period_of_report FROM filings WHERE cik = ?", (cik,)).fetchall()
+            "SELECT DISTINCT period_of_report FROM filings WHERE cik = ? "
+            "AND period_of_report <= COALESCE(?, '9999-12-31')",
+            (cik, as_of)).fetchall()
         for (period,) in periods:
             ids = adapter.effective_filing_ids(conn, cik, period)
             if not ids:
@@ -254,17 +265,19 @@ def _quarter_cusips(conn: sqlite3.Connection, cik: str, period: str) -> set[str]
     return {r[0] for r in rows}
 
 
-def compute_turnover(conn: sqlite3.Connection) -> None:
+def compute_turnover(conn: sqlite3.Connection, as_of: str | None = None) -> None:
     """Stage 5 — average position turnover and its score multiplier.
 
     Computed for funds that have a fund_tws row (fully scored funds).
+    as_of (optional): only consider quarters on/before as_of.
     """
     funds = [r[0] for r in conn.execute(
         "SELECT fund_id FROM fund_tws").fetchall()]
     for cik in funds:
         periods = [r[0] for r in conn.execute(
             "SELECT DISTINCT period_of_report FROM filings WHERE cik = ? "
-            "ORDER BY period_of_report", (cik,)).fetchall()]
+            "AND period_of_report <= COALESCE(?, '9999-12-31') "
+            "ORDER BY period_of_report", (cik, as_of)).fetchall()]
         rates: list[float] = []
         prev = _quarter_cusips(conn, cik, periods[0]) if periods else set()
         for period in periods[1:]:
@@ -405,8 +418,12 @@ def compute_composite(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def run_fund_pipeline(db_path: Path = DB_PATH) -> dict:
-    """Run stages 1-7 in order. Returns a small summary dict."""
+def run_fund_pipeline(db_path: Path = DB_PATH, as_of: str | None = None) -> dict:
+    """Run stages 1-7 in order. Returns a small summary dict.
+
+    as_of (optional): point-in-time mode for backtesting — every stage sees
+    only filings/periods on/before as_of and treats as_of as 'today'.
+    Default None preserves production behavior exactly."""
     conn = get_connection(db_path)
     try:
         adapter.init_schema(conn, db_path)
@@ -417,11 +434,11 @@ def run_fund_pipeline(db_path: Path = DB_PATH) -> dict:
                   "fund_tws", "fund_turnover", "fund_consistency", "fund_rankings"):
             conn.execute(f"DELETE FROM {t}")
         conn.commit()
-        weed_funds(conn)
-        compute_holding_returns(conn)
+        weed_funds(conn, as_of)
+        compute_holding_returns(conn, as_of)
         compute_qps(conn)
         compute_tws(conn)
-        compute_turnover(conn)
+        compute_turnover(conn, as_of)
         compute_consistency(conn)
         compute_composite(conn)
         ranked = conn.execute("SELECT COUNT(*) FROM fund_rankings").fetchone()[0]

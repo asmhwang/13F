@@ -25,8 +25,13 @@ def init_schema(conn: sqlite3.Connection | None = None, db_path: Path = DB_PATH)
     c.commit()
 
 
-def current_quarter_date(conn: sqlite3.Connection) -> str | None:
-    return conn.execute("SELECT MAX(period_of_report) FROM filings").fetchone()[0]
+def current_quarter_date(conn: sqlite3.Connection, as_of: str | None = None) -> str | None:
+    """Latest filing period, optionally restricted to periods on/before as_of
+    (point-in-time backtesting)."""
+    return conn.execute(
+        "SELECT MAX(period_of_report) FROM filings "
+        "WHERE period_of_report <= COALESCE(?, '9999-12-31')", (as_of,)
+    ).fetchone()[0]
 
 
 def latest_filing_id(conn: sqlite3.Connection, cik: str, period: str) -> int | None:

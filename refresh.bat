@@ -19,6 +19,10 @@ echo [2/6] Resolving new CUSIPs...
 echo [2/6] Resolving new CUSIPs... >> "%LOG%"
 python -m pipeline.cusip 2>&1 | tee -a "%LOG%"
 
+echo [2b] Resolving historical CUSIPs (offline passes)...
+echo [2b] Resolving historical CUSIPs (offline passes)... >> "%LOG%"
+python -m pipeline.cusip_local 2>&1 | tee -a "%LOG%"
+
 echo [3/6] Fetching prices + benchmark...
 echo [3/6] Fetching prices + benchmark... >> "%LOG%"
 python -m pipeline.prices 2>&1 | tee -a "%LOG%"
@@ -27,13 +31,21 @@ echo [4/6] Fetching current-quarter fundamentals...
 echo [4/6] Fetching current-quarter fundamentals... >> "%LOG%"
 python -m pipeline.fundamentals 2>&1 | tee -a "%LOG%"
 
-echo [5/6] Scoring fund rankings...
-echo [5/6] Scoring fund rankings... >> "%LOG%"
+echo [5/8] Scoring fund rankings...
+echo [5/8] Scoring fund rankings... >> "%LOG%"
 python -m pipeline.scoring.fund_pipeline 2>&1 | tee -a "%LOG%"
 
-echo [6/6] Scoring stock rankings...
-echo [6/6] Scoring stock rankings... >> "%LOG%"
+echo [6/8] Scoring stock rankings...
+echo [6/8] Scoring stock rankings... >> "%LOG%"
 python -m pipeline.scoring.stock_pipeline 2>&1 | tee -a "%LOG%"
+
+echo [7/8] Scoring fund rankings v2...
+echo [7/8] Scoring fund rankings v2... >> "%LOG%"
+python -m pipeline.scoring.fund_pipeline_v2 2>&1 | tee -a "%LOG%"
+
+echo [8/8] Scoring stock rankings v2...
+echo [8/8] Scoring stock rankings v2... >> "%LOG%"
+python -m pipeline.scoring.stock_pipeline_v2 2>&1 | tee -a "%LOG%"
 
 echo Done.
 echo Done. >> "%LOG%"

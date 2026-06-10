@@ -121,6 +121,80 @@ def stock_holders(ticker: str, conn: sqlite3.Connection | None = None) -> pd.Dat
     )
 
 
+# ----------------------------- v2 query functions -----------------------------
+
+def fund_rankings_v2(conn: sqlite3.Connection | None = None) -> pd.DataFrame:
+    """All v2-ranked funds, best first."""
+    c = _conn(conn)
+    return pd.read_sql(
+        "SELECT * FROM fund_rankings_v2 WHERE eligible = 1 ORDER BY rank ASC", c
+    )
+
+
+def fund_clone_windows_v2(fund_id: str, conn: sqlite3.Connection | None = None) -> pd.DataFrame:
+    """Valid clone windows for one fund, oldest first (for the detail chart)."""
+    c = _conn(conn)
+    return pd.read_sql(
+        "SELECT start_period, end_period, clone_return, benchmark_return, "
+        "excess_return, coverage FROM fund_clone_windows_v2 "
+        "WHERE fund_id = ? AND valid = 1 ORDER BY start_period ASC",
+        c, params=(fund_id,),
+    )
+
+
+def stock_rankings_v2(conn: sqlite3.Connection | None = None) -> pd.DataFrame:
+    """V2 stock rankings, best first."""
+    c = _conn(conn)
+    return pd.read_sql("SELECT * FROM stock_rankings_v2 ORDER BY rank ASC", c)
+
+
+def stock_holders_v2(ticker: str, conn: sqlite3.Connection | None = None) -> pd.DataFrame:
+    """V2-ranked funds holding `ticker`: latest-quarter weight + quarters held."""
+    c = _conn(conn)
+    return pd.read_sql(
+        """
+        WITH latest AS (
+            SELECT f.cik, MAX(f.period_of_report) AS period
+            FROM filings f GROUP BY f.cik
+        ),
+        latest_filing AS (
+            SELECT ef.filing_id AS id, ef.cik FROM effective_filings ef
+            JOIN latest l ON l.cik = ef.cik AND l.period = ef.period_of_report
+        ),
+        fund_total AS (
+            SELECT lf.cik, SUM(h.value_thousands) AS total_k
+            FROM holdings h JOIN latest_filing lf ON lf.id = h.filing_id
+            WHERE h.put_call IS NULL GROUP BY lf.cik
+        ),
+        pos AS (
+            SELECT lf.cik, SUM(h.value_thousands) AS pos_k
+            FROM holdings h
+            JOIN latest_filing lf ON lf.id = h.filing_id
+            JOIN securities s ON s.cusip = h.cusip
+            WHERE s.ticker = ? AND h.put_call IS NULL
+            GROUP BY lf.cik
+        ),
+        held AS (
+            SELECT f.cik, COUNT(DISTINCT f.period_of_report) AS quarters_held
+            FROM filings f
+            JOIN holdings h ON h.filing_id = f.id
+            JOIN securities s ON s.cusip = h.cusip
+            WHERE s.ticker = ? AND h.put_call IS NULL
+            GROUP BY f.cik
+        )
+        SELECT fr.fund_name, fr.rank, fr.score, fr.shrunk_ir_annual,
+               (pos.pos_k * 1.0 / ft.total_k) AS weight,
+               held.quarters_held
+        FROM pos
+        JOIN fund_rankings_v2 fr ON fr.fund_id = pos.cik AND fr.eligible = 1
+        JOIN fund_total ft ON ft.cik = pos.cik
+        JOIN held ON held.cik = pos.cik
+        ORDER BY fr.rank ASC
+        """,
+        c, params=(ticker, ticker),
+    )
+
+
 # ----------------------------- streamlit cache wrappers -----------------------------
 
 @st.cache_data(ttl=300)
@@ -173,5 +247,41 @@ def load_rankings_meta() -> dict:
     conn = get_connection()
     try:
         return rankings_meta(conn)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=300)
+def load_fund_rankings_v2() -> pd.DataFrame:
+    conn = get_connection()
+    try:
+        return fund_rankings_v2(conn)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=300)
+def load_fund_clone_windows_v2(fund_id: str) -> pd.DataFrame:
+    conn = get_connection()
+    try:
+        return fund_clone_windows_v2(fund_id, conn)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=300)
+def load_stock_rankings_v2() -> pd.DataFrame:
+    conn = get_connection()
+    try:
+        return stock_rankings_v2(conn)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=300)
+def load_stock_holders_v2(ticker: str) -> pd.DataFrame:
+    conn = get_connection()
+    try:
+        return stock_holders_v2(ticker, conn)
     finally:
         conn.close()

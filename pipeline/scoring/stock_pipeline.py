@@ -81,16 +81,18 @@ def _equity_holdings(conn: sqlite3.Connection, cik: str, period: str) -> dict[st
     return {r["ticker"]: r["v"] for r in rows}
 
 
-def fund_histories(conn: sqlite3.Connection, qualifying: dict[str, float]
+def fund_histories(conn: sqlite3.Connection, qualifying: dict[str, float],
+                   as_of: str | None = None
                    ) -> dict[str, dict[str, dict[str, float]]]:
     """Per qualifying fund: {period: {ticker: value}} across all its filed
-    quarters. Built once so signal/tenure computation needs no further holdings
-    queries."""
+    quarters (optionally only periods on/before as_of). Built once so
+    signal/tenure computation needs no further holdings queries."""
     hist: dict[str, dict[str, dict[str, float]]] = {}
     for cik in qualifying:
         periods = [r[0] for r in conn.execute(
             "SELECT DISTINCT period_of_report FROM filings WHERE cik = ? "
-            "ORDER BY period_of_report", (cik,)).fetchall()]
+            "AND period_of_report <= COALESCE(?, '9999-12-31') "
+            "ORDER BY period_of_report", (cik, as_of)).fetchall()]
         hist[cik] = {p: _equity_holdings(conn, cik, p) for p in periods}
     return hist
 
@@ -389,18 +391,22 @@ def _truncate(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def run_stock_pipeline(db_path: Path = DB_PATH) -> dict:
-    """Run stages 1-6 and materialize the stock ranking tables (idempotent)."""
+def run_stock_pipeline(db_path: Path = DB_PATH, as_of: str | None = None) -> dict:
+    """Run stages 1-6 and materialize the stock ranking tables (idempotent).
+
+    as_of (optional): point-in-time mode for backtesting — the 'current'
+    quarter and all histories are capped at as_of. Assumes fund_rankings was
+    built with the same as_of. Default None = production behavior."""
     conn = get_connection(db_path)
     try:
         adapter.init_schema(conn, db_path)
         ensure_effective_filings(conn)
         _truncate(conn)
-        cq = adapter.current_quarter_date(conn)
+        cq = adapter.current_quarter_date(conn, as_of)
         qualifying = qualifying_funds(conn)
         if cq is None or not qualifying:
             return {"universe": 0, "ranked": 0}
-        hist = fund_histories(conn, qualifying)
+        hist = fund_histories(conn, qualifying, as_of)
         sig = signals_for_period(conn, cq, qualifying, hist)
         universe = list(sig.keys())
         sector = {t: (conn.execute("SELECT sector FROM sectors WHERE ticker = ?", (t,)).fetchone() or ["Unknown"])[0]

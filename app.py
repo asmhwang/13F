@@ -25,7 +25,9 @@ from pipeline.queries import conviction_scores as _conviction_scores
 
 from webui import theme as rk_theme
 from webui.fund_rankings import render_fund_rankings
+from webui.fund_rankings_v2 import render_fund_rankings_v2
 from webui.stock_rankings import render_stock_rankings
+from webui.stock_rankings_v2 import render_stock_rankings_v2
 
 # Thread-safe job store for background ingest operations
 _ingest_jobs: dict[str, dict] = {}
@@ -817,12 +819,16 @@ with st.sidebar:
     view = st.radio(
         "view",
         ["Single Filer", "Cross-Filer Overview", "Conviction Scores",
-         "Fund Rankings", "Stock Rankings"],
+         "Fund Rankings", "Stock Rankings",
+         "Fund Rankings v2", "Stock Rankings v2"],
         index=0,
         label_visibility="collapsed",
     )
 
-    if view not in ("Fund Rankings", "Stock Rankings"):
+    _RANKING_VIEWS = ("Fund Rankings", "Stock Rankings",
+                      "Fund Rankings v2", "Stock Rankings v2")
+
+    if view not in _RANKING_VIEWS:
         st.markdown('<div class="sb-sec">Filters</div>', unsafe_allow_html=True)
 
     if view == "Single Filer":
@@ -840,7 +846,7 @@ with st.sidebar:
         older_periods   = [p for p in filer_periods if p < selected_period]
         if older_periods:
             compare_period = st.selectbox("Compare to (QoQ)", older_periods, index=0)
-    elif view not in ("Fund Rankings", "Stock Rankings"):
+    elif view not in _RANKING_VIEWS:
         selected_period = st.selectbox("Period", periods)
 
     if view == "Conviction Scores":
@@ -1320,3 +1326,9 @@ elif view == "Fund Rankings":
 
 elif view == "Stock Rankings":
     render_stock_rankings()
+
+elif view == "Fund Rankings v2":
+    render_fund_rankings_v2()
+
+elif view == "Stock Rankings v2":
+    render_stock_rankings_v2()
