@@ -47,21 +47,24 @@ st.set_page_config(
 )
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Plotly warm-light template
+# Plotly dark-terminal template
 # ────────────────────────────────────────────────────────────────────────────────
 
-_CHART_BG  = "#FDFAF6"
-_GRID      = "#E8E0D4"
-_TEXT      = "#4A3F36"
-_TEXT_DIM  = "#9C8D80"
+_CHART_BG  = "#14171C"   # card surface
+_GRID      = "#262B33"
+_TEXT      = "#C7CDD4"
+_TEXT_DIM  = "#7E8893"
 
-pio.templates["calm"] = go.layout.Template(
+# Luminous categorical palette tuned for the dark surface
+_COLORWAY = ["#5BAEFF", "#3FD68C", "#FFB454", "#FF6B5E",
+             "#56D3DC", "#C0A6FF", "#8FD460", "#FF92C2"]
+
+pio.templates["terminal"] = go.layout.Template(
     layout=go.Layout(
         paper_bgcolor=_CHART_BG,
         plot_bgcolor=_CHART_BG,
-        font=dict(family="'Nunito', sans-serif", color=_TEXT, size=12),
-        colorway=["#4A7FA5", "#6B8F7A", "#C48B3F", "#B85C4A",
-                  "#7A6BAF", "#4A9490", "#B87A3F", "#8A9FAF"],
+        font=dict(family="'Inter', sans-serif", color=_TEXT, size=12),
+        colorway=_COLORWAY,
         xaxis=dict(
             gridcolor=_GRID, linecolor=_GRID,
             zerolinecolor=_GRID, tickcolor=_GRID,
@@ -73,8 +76,8 @@ pio.templates["calm"] = go.layout.Template(
             tickfont=dict(color=_TEXT_DIM, size=11),
         ),
         hoverlabel=dict(
-            bgcolor="#FDFAF6", bordercolor=_GRID,
-            font=dict(family="'Nunito', sans-serif", color=_TEXT, size=12),
+            bgcolor="#1A1E24", bordercolor=_GRID,
+            font=dict(family="'Inter', sans-serif", color="#E8EAED", size=12),
         ),
         legend=dict(
             bgcolor=_CHART_BG, bordercolor=_GRID, borderwidth=1,
@@ -88,12 +91,14 @@ pio.templates["calm"] = go.layout.Template(
         )),
     )
 )
-pio.templates.default = "calm"
+pio.templates.default = "terminal"
 
-CS_BLUE  = ["#FDFAF6", "#C5D9E8", "#7BAFC9", "#4A7FA5"]
-CS_SAGE  = ["#FDFAF6", "#C5D9CC", "#85B89A", "#5B8A6E"]
-CS_AMBER = ["#FDFAF6", "#EDD9B8", "#D4A86B", "#C48B3F"]
-CS_SLATE = ["#FDFAF6", "#D0D8E0", "#8EA8BC", "#4A7FA5"]
+# Continuous scales: start well above the card surface so the lowest values
+# stay visible on #14171C.
+CS_BLUE  = ["#264663", "#2F669C", "#418CD6", "#5BAEFF"]
+CS_SAGE  = ["#1F4A35", "#28714E", "#33A86E", "#3FD68C"]
+CS_AMBER = ["#5C4423", "#8F6A30", "#C7903F", "#FFB454"]
+CS_SLATE = ["#264663", "#2F669C", "#418CD6", "#5BAEFF"]
 
 # ────────────────────────────────────────────────────────────────────────────────
 # CSS
@@ -102,24 +107,26 @@ CS_SLATE = ["#FDFAF6", "#D0D8E0", "#8EA8BC", "#4A7FA5"]
 def inject_css() -> None:
     st.markdown(r"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600;1,400;1,500&family=Nunito:wght@300;400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
-/* ── Variables ─────────────────────────────────────── */
+/* ── Variables (dark terminal) ─────────────────────── */
 :root {
-    --bg:     #F4EFE6;
-    --card:   #FDFAF6;
-    --surf:   #F0EBE0;
-    --bdr:    #DDD4C6;
-    --bdr-lo: #EDE5D8;
-    --t0:     #2E2720;
-    --t1:     #6E6058;
-    --t2:     #A09080;
-    --slate:  #4A7FA5;
-    --sage:   #5B8A6E;
-    --amber:  #C48B3F;
-    --green:  #5B8A6E;
-    --red:    #B85C4A;
-    --shadow: 0 1px 4px rgba(60,40,20,0.07), 0 0 0 1px var(--bdr-lo);
+    --bg:     #0B0D10;
+    --card:   #14171C;
+    --surf:   #1A1E24;
+    --bdr:    #262B33;
+    --bdr-lo: #1E232A;
+    --t0:     #E8EAED;
+    --t1:     #A8AFB8;
+    --t2:     #7E8893;
+    --slate:  #5BAEFF;
+    --sage:   #3FD68C;
+    --amber:  #FFB454;
+    --green:  #3FD68C;
+    --red:    #FF6B5E;
+    --mono:   'JetBrains Mono', ui-monospace, monospace;
+    /* dark elevation = lighter surface + border, not blur */
+    --shadow: 0 0 0 1px var(--bdr-lo);
 }
 
 /* ── Shell ──────────────────────────────────────────── */
@@ -137,24 +144,24 @@ def inject_css() -> None:
 [data-testid="stSidebar"]        { border-right: 1px solid var(--bdr) !important; }
 
 /* ── Typography ─────────────────────────────────────── */
-body, p, span, li               { font-family: 'Nunito', sans-serif; }
-h1, h2, h3, h4                  { font-family: 'Lora', serif !important; color: var(--t0) !important; font-weight: 500 !important; }
+body, p, span, li               { font-family: 'Inter', sans-serif; }
+h1, h2, h3, h4                  { font-family: 'Inter', sans-serif !important; color: var(--t0) !important; font-weight: 500 !important; }
 h1                              { font-size: 2rem !important; letter-spacing: -0.01em !important; }
 h2                              { font-size: 1.4rem !important; }
 h3                              { font-size: 1.1rem !important; font-weight: 400 !important; }
-p, .stMarkdown p                { font-family: 'Nunito', sans-serif !important; color: var(--t0) !important; font-size: 0.92rem !important; line-height: 1.6 !important; }
+p, .stMarkdown p                { font-family: 'Inter', sans-serif !important; color: var(--t0) !important; font-size: 0.92rem !important; line-height: 1.6 !important; }
 
 /* ── Selectbox ──────────────────────────────────────── */
 [data-testid="stSelectbox"] div[data-baseweb="select"] > div:first-child {
     background: var(--card) !important;
     border-color: var(--bdr) !important;
     color: var(--t0) !important;
-    font-family: 'Nunito', sans-serif !important;
+    font-family: 'Inter', sans-serif !important;
     font-size: 0.9rem !important;
     border-radius: 6px !important;
 }
 [data-testid="stSelectbox"] label {
-    font-family: 'Nunito', sans-serif !important;
+    font-family: 'Inter', sans-serif !important;
     font-size: 0.75rem !important;
     font-weight: 600 !important;
     letter-spacing: 0.06em !important;
@@ -163,12 +170,12 @@ p, .stMarkdown p                { font-family: 'Nunito', sans-serif !important; 
 }
 [data-baseweb="popover"],
 [data-baseweb="menu"]           { background: var(--card) !important; border: 1px solid var(--bdr) !important; border-radius: 6px !important; box-shadow: var(--shadow) !important; }
-[data-baseweb="option"]         { background: var(--card) !important; color: var(--t0) !important; font-family: 'Nunito', sans-serif !important; font-size: 0.9rem !important; }
+[data-baseweb="option"]         { background: var(--card) !important; color: var(--t0) !important; font-family: 'Inter', sans-serif !important; font-size: 0.9rem !important; }
 [data-baseweb="option"]:hover   { background: var(--surf) !important; }
 
 /* ── Slider ─────────────────────────────────────────── */
 [data-testid="stSlider"] label  {
-    font-family: 'Nunito', sans-serif !important;
+    font-family: 'Inter', sans-serif !important;
     font-size: 0.75rem !important;
     font-weight: 600 !important;
     letter-spacing: 0.06em !important;
@@ -178,7 +185,7 @@ p, .stMarkdown p                { font-family: 'Nunito', sans-serif !important; 
 
 /* ── Radio ──────────────────────────────────────────── */
 [data-testid="stRadio"] > label {
-    font-family: 'Nunito', sans-serif !important;
+    font-family: 'Inter', sans-serif !important;
     font-size: 0.75rem !important;
     font-weight: 600 !important;
     letter-spacing: 0.06em !important;
@@ -198,7 +205,7 @@ p, .stMarkdown p                { font-family: 'Nunito', sans-serif !important; 
     background: var(--card) !important;
     border: 1px solid var(--bdr) !important;
     color: var(--t1) !important;
-    font-family: 'Nunito', sans-serif !important;
+    font-family: 'Inter', sans-serif !important;
     font-size: 0.82rem !important;
     font-weight: 600 !important;
     letter-spacing: 0.05em !important;
@@ -210,7 +217,7 @@ p, .stMarkdown p                { font-family: 'Nunito', sans-serif !important; 
 .stButton > button:hover {
     border-color: var(--slate) !important;
     color: var(--slate) !important;
-    background: #EEF4F9 !important;
+    background: var(--surf) !important;
 }
 
 /* ── Dividers ───────────────────────────────────────── */
@@ -220,12 +227,12 @@ hr, [data-testid="stDivider"] hr { border-color: var(--bdr-lo) !important; margi
 [data-testid="metric-container"],
 [data-testid="stMetric"] {
     background: var(--card) !important;
-    border-radius: 8px !important;
+    border: 1px solid var(--bdr-lo) !important;
+    border-radius: 10px !important;
     padding: 1rem 1.2rem !important;
-    box-shadow: var(--shadow) !important;
 }
 [data-testid="stMetricLabel"] p {
-    font-family: 'Nunito', sans-serif !important;
+    font-family: 'Inter', sans-serif !important;
     font-size: 0.72rem !important;
     text-transform: uppercase !important;
     letter-spacing: 0.08em !important;
@@ -233,8 +240,10 @@ hr, [data-testid="stDivider"] hr { border-color: var(--bdr-lo) !important; margi
     font-weight: 600 !important;
 }
 [data-testid="stMetricValue"] {
-    font-family: 'Lora', serif !important;
-    font-size: 1.5rem !important;
+    font-family: var(--mono) !important;
+    font-size: 1.4rem !important;
+    font-weight: 500 !important;
+    letter-spacing: -0.01em !important;
     color: var(--t0) !important;
 }
 
@@ -256,7 +265,7 @@ hr, [data-testid="stDivider"] hr { border-color: var(--bdr-lo) !important; margi
 }
 [data-testid="stExpander"] summary {
     color: var(--t1) !important;
-    font-family: 'Nunito', sans-serif !important;
+    font-family: 'Inter', sans-serif !important;
     font-size: 0.85rem !important;
     font-weight: 600 !important;
 }
@@ -278,7 +287,7 @@ pre code, .stCodeBlock code {
 
 /* ── Caption ────────────────────────────────────────── */
 [data-testid="stCaptionContainer"] p {
-    font-family: 'Nunito', sans-serif !important;
+    font-family: 'Inter', sans-serif !important;
     font-size: 0.78rem !important;
     color: var(--t2) !important;
 }
@@ -308,9 +317,9 @@ pre code, .stCodeBlock code {
     margin-bottom: 0;
 }
 .hero-title {
-    font-family: 'Lora', serif;
+    font-family: 'Inter', sans-serif;
     font-size: 1.75rem;
-    font-weight: 500;
+    font-weight: 600;
     color: var(--t0);
     letter-spacing: -0.01em;
     margin: 0;
@@ -322,7 +331,7 @@ pre code, .stCodeBlock code {
     line-height: 1;
 }
 .hero-context {
-    font-family: 'Nunito', sans-serif;
+    font-family: 'Inter', sans-serif;
     font-size: 0.9rem;
     color: var(--t1);
     font-weight: 400;
@@ -330,14 +339,15 @@ pre code, .stCodeBlock code {
 }
 .hero-period {
     margin-left: auto;
-    font-family: 'Nunito', sans-serif;
+    font-family: 'Inter', sans-serif;
     font-size: 0.82rem;
     color: var(--t2);
     font-weight: 500;
 }
 .hero-period b {
     color: var(--amber);
-    font-weight: 600;
+    font-weight: 500;
+    font-family: var(--mono);
 }
 
 /* KPI strip */
@@ -349,13 +359,14 @@ pre code, .stCodeBlock code {
 }
 .kpi-card {
     background: var(--card);
-    border-radius: 8px;
+    border: 1px solid var(--bdr-lo);
+    border-radius: 10px;
     padding: 1rem 1.1rem 0.9rem;
-    box-shadow: var(--shadow);
-    border-top: 3px solid transparent;
+    transition: border-color 0.15s ease;
 }
+.kpi-card:hover { border-color: var(--bdr); }
 .kpi-label {
-    font-family: 'Nunito', sans-serif;
+    font-family: 'Inter', sans-serif;
     font-size: 0.7rem;
     text-transform: uppercase;
     letter-spacing: 0.1em;
@@ -364,14 +375,15 @@ pre code, .stCodeBlock code {
     margin-bottom: 0.45rem;
 }
 .kpi-val {
-    font-family: 'Lora', serif;
-    font-size: 1.55rem;
+    font-family: var(--mono);
+    font-size: 1.45rem;
     font-weight: 500;
+    letter-spacing: -0.01em;
     color: var(--t0);
     line-height: 1.1;
 }
 .kpi-note {
-    font-family: 'Nunito', sans-serif;
+    font-family: 'Inter', sans-serif;
     font-size: 0.72rem;
     color: var(--t2);
     margin-top: 0.25rem;
@@ -388,7 +400,7 @@ pre code, .stCodeBlock code {
     margin: 1.6rem 0 0.85rem;
 }
 .shdr-title {
-    font-family: 'Lora', serif;
+    font-family: 'Inter', sans-serif;
     font-size: 1.15rem;
     font-weight: 500;
     color: var(--t0);
@@ -400,7 +412,7 @@ pre code, .stCodeBlock code {
     background: var(--bdr-lo);
 }
 .shdr-tag {
-    font-family: 'Nunito', sans-serif;
+    font-family: 'Inter', sans-serif;
     font-size: 0.7rem;
     font-weight: 600;
     color: var(--t2);
@@ -410,19 +422,17 @@ pre code, .stCodeBlock code {
 
 /* Conviction formula */
 .formula-card {
-    background: var(--card);
-    border: 1px solid var(--bdr-lo);
-    border-left: 3px solid var(--amber);
-    border-radius: 0 8px 8px 0;
+    background: rgba(255, 180, 84, 0.06);
+    border: 1px solid rgba(255, 180, 84, 0.25);
+    border-radius: 10px;
     padding: 0.85rem 1.1rem;
     margin-bottom: 1rem;
-    font-family: 'Nunito', sans-serif;
+    font-family: 'Inter', sans-serif;
     font-size: 0.85rem;
     color: var(--t1);
     line-height: 1.7;
-    box-shadow: var(--shadow);
 }
-.formula-card b { color: var(--amber); font-weight: 700; }
+.formula-card b { color: var(--amber); font-weight: 600; font-family: var(--mono); }
 
 /* QoQ change badges */
 .chg-grid {
@@ -433,13 +443,13 @@ pre code, .stCodeBlock code {
 }
 .chg-card {
     background: var(--card);
-    border-radius: 8px;
+    border: 1px solid var(--bdr-lo);
+    border-radius: 10px;
     padding: 0.9rem 1rem;
     text-align: center;
-    box-shadow: var(--shadow);
 }
 .chg-card-label {
-    font-family: 'Nunito', sans-serif;
+    font-family: 'Inter', sans-serif;
     font-size: 0.7rem;
     text-transform: uppercase;
     letter-spacing: 0.1em;
@@ -448,8 +458,8 @@ pre code, .stCodeBlock code {
     margin-bottom: 0.3rem;
 }
 .chg-card-val {
-    font-family: 'Lora', serif;
-    font-size: 1.8rem;
+    font-family: var(--mono);
+    font-size: 1.7rem;
     font-weight: 500;
     line-height: 1;
 }
@@ -461,14 +471,14 @@ pre code, .stCodeBlock code {
     margin-bottom: 0.6rem;
 }
 .sb-title {
-    font-family: 'Lora', serif;
+    font-family: 'Inter', sans-serif;
     font-size: 1.1rem;
     font-weight: 500;
     color: var(--t0);
     letter-spacing: -0.01em;
 }
 .sb-sub {
-    font-family: 'Nunito', sans-serif;
+    font-family: 'Inter', sans-serif;
     font-size: 0.7rem;
     color: var(--t2);
     margin-top: 0.15rem;
@@ -476,7 +486,7 @@ pre code, .stCodeBlock code {
 }
 
 .sb-sec {
-    font-family: 'Nunito', sans-serif;
+    font-family: 'Inter', sans-serif;
     font-size: 0.68rem;
     text-transform: uppercase;
     letter-spacing: 0.1em;
@@ -511,7 +521,7 @@ def kpi_row(cards: list[tuple]) -> None:
         c = _ACCENT.get(color, _ACCENT["slate"])
         note_html = f'<div class="kpi-note">{_html.escape(str(note))}</div>' if note else ""
         markup += f"""
-  <div class="kpi-card" style="border-top-color:{c}">
+  <div class="kpi-card">
     <div class="kpi-label">{_html.escape(str(label))}</div>
     <div class="kpi-val" style="color:{c}">{_html.escape(str(value))}</div>
     {note_html}
@@ -546,19 +556,19 @@ def chg_badges(new: int, closed: int, increased: int, decreased: int) -> None:
 <div class="chg-grid">
   <div class="chg-card">
     <div class="chg-card-label">New</div>
-    <div class="chg-card-val" style="color:#5B8A6E">{new}</div>
+    <div class="chg-card-val" style="color:#3FD68C">{new}</div>
   </div>
   <div class="chg-card">
     <div class="chg-card-label">Closed</div>
-    <div class="chg-card-val" style="color:#B85C4A">{closed}</div>
+    <div class="chg-card-val" style="color:#FF6B5E">{closed}</div>
   </div>
   <div class="chg-card">
     <div class="chg-card-label">Increased</div>
-    <div class="chg-card-val" style="color:#5B8A6E">{increased}</div>
+    <div class="chg-card-val" style="color:#3FD68C">{increased}</div>
   </div>
   <div class="chg-card">
     <div class="chg-card-label">Decreased</div>
-    <div class="chg-card-val" style="color:#B85C4A">{decreased}</div>
+    <div class="chg-card-val" style="color:#FF6B5E">{decreased}</div>
   </div>
 </div>""", unsafe_allow_html=True)
 
@@ -997,9 +1007,9 @@ if view == "Single Filer":
         fig = px.pie(
             pie_data, names="ticker", values="value_thousands", hole=0.42,
             color_discrete_sequence=[
-                "#4A7FA5","#6B8F7A","#C48B3F","#7A6BAF","#4A9490",
-                "#B87A3F","#8A9FAF","#B85C4A","#9FAF8A","#AF8A9F",
-                "#5C8A9A","#8A5C7A","#7A9A5C","#9A7A5C","#5C7A9A",
+                "#5BAEFF","#3FD68C","#FFB454","#FF6B5E","#56D3DC",
+                "#C0A6FF","#8FD460","#FF92C2","#3179BC","#2C9159",
+                "#C28432","#C2554B","#3FA0A8","#8F7BD4","#6BA048",
             ],
         )
         fig.update_traces(
@@ -1059,8 +1069,8 @@ if view == "Single Filer":
 
         top_changes = merged.head(20).copy()
         bar_colors  = top_changes["status"].map({
-            "New": "#5B8A6E", "Increased": "#5B8A6E",
-            "Decreased": "#B85C4A", "Closed": "#B85C4A",
+            "New": "#3FD68C", "Increased": "#3FD68C",
+            "Decreased": "#FF6B5E", "Closed": "#FF6B5E",
         })
         fig3 = go.Figure(go.Bar(
             x=top_changes["change"],

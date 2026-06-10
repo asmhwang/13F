@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import pandas as pd
 
-# --- palette (kept in sync with theme.py) ---
-INK             = "#1d1d1f"
-INK_SECONDARY   = "#6e6e73"
-ACCENT          = "#0071e3"
-BUY_GREEN       = "#34c759"
-SELL_RED        = "#ff3b30"
-CONF_HIGH       = "#34c759"
-CONF_MEDIUM     = "#ff9f0a"
-CONF_LOW        = "#8e8e93"
+# --- palette (kept in sync with theme.py dark-terminal tokens) ---
+INK             = "#E8EAED"
+INK_SECONDARY   = "#7E8893"
+ACCENT          = "#5BAEFF"
+BUY_GREEN       = "#3FD68C"
+SELL_RED        = "#FF6B5E"
+CONF_HIGH       = "#3FD68C"
+CONF_MEDIUM     = "#FFB454"
+CONF_LOW        = "#7E8893"
 
 
 def fmt_money(v) -> str:
@@ -32,11 +32,15 @@ def fmt_money(v) -> str:
 
 def fmt_pct(v, signed: bool = True) -> str:
     """Format a fraction as a percent. signed=False for unsigned rates
-    (e.g. turnover) where a forced "+" would imply a delta."""
+    (e.g. turnover) where a forced "+" would imply a delta. Values that
+    round to zero render as an unsigned 0.0% ("-0.0%" reads as a bug)."""
     if v is None or (isinstance(v, float) and pd.isna(v)):
         return "—"
+    pct = round(v * 100, 1)
+    if pct == 0:
+        return "0.0%"
     sign = "+" if signed else ""
-    return f"{v * 100:{sign}.1f}%"
+    return f"{pct:{sign}.1f}%"
 
 
 def net_change_color(v) -> str:
@@ -104,7 +108,9 @@ def score_bar_html(score: float, max_score: float = 100.0) -> str:
 
 
 def badge_html(text: str, color: str) -> str:
-    return f'<span class="rk-badge" style="background:{color}">{_html.escape(text)}</span>'
+    # color drives currentColor: the CSS derives a tinted bg + border from it,
+    # so the badge reads as a soft pill on the dark surface.
+    return f'<span class="rk-badge" style="color:{color}">{_html.escape(text)}</span>'
 
 
 def ranking_list(rows_html: list[str], stagger_ms: int = 50) -> None:

@@ -17,8 +17,11 @@ def _stock_row_html(r: pd.Series) -> str:
     flag = str(r.get("confidence_flag") or "")
     badge = c.badge_html(flag, c.confidence_color(flag)) if flag else ""
     nc = r.get("net_change_pct")
-    nc_color = c.net_change_color(nc)
-    arrow = "▲" if (nc or 0) > 0 else ("▼" if (nc or 0) < 0 else "·")
+    # Round to display precision first so the arrow can't contradict the text
+    # ("▼ 0.0%" for a tiny negative drift).
+    nc_disp = 0.0 if nc is None or pd.isna(nc) else round(float(nc) * 100, 1)
+    nc_color = c.net_change_color(nc_disp)
+    arrow = "▲" if nc_disp > 0 else ("▼" if nc_disp < 0 else "·")
     score = r.get("sector_adjusted_score")
     score_txt = "—" if score is None or pd.isna(score) else f"{score:.2f}"
     tenure = r.get("avg_tenure")
@@ -109,14 +112,16 @@ def render_stock_rankings() -> None:
            "Stocks the top-ranked funds are most convicted on right now.", stale)
 
     raw = data.load_stock_rankings("raw")
+    filtered = data.load_stock_rankings("filtered")
     if not raw.empty:
         high = int((raw["confidence_flag"] == "High").sum())
-        med_score = raw["sector_adjusted_score"].median()
         n_sectors = raw["sector"].nunique()
+        # Median sector-adjusted score is ~0 by construction (demeaned per
+        # sector) — the filtered-pick count is the KPI that carries signal.
         c.kpi_strip([
             (str(len(raw)), "Universe size"),
             (str(high), "High confidence"),
-            ("—" if pd.isna(med_score) else f"{med_score:.2f}", "Median score"),
+            (str(len(filtered)), "Filtered picks"),
             (str(n_sectors), "Sectors"),
         ])
 
@@ -124,4 +129,4 @@ def render_stock_rankings() -> None:
     with tab_raw:
         _render_tab(raw, "raw")
     with tab_filt:
-        _render_tab(data.load_stock_rankings("filtered"), "filtered")
+        _render_tab(filtered, "filtered")

@@ -19,11 +19,12 @@ def _fund_row_html(r: pd.Series) -> str:
         f'<div class="rk-rank">{int(r["rank"])}</div>'
         f'<div><div class="rk-name">{_html.escape(str(r["fund_name"]))}{chip}</div>'
         f'<div class="rk-sub">{c.fmt_money(r.get("avg_aum"))} avg AUM</div></div>'
-        f'<div><div class="rk-name">{score:.0f}</div>{c.score_bar_html(score)}</div>'
+        f'<div><div class="rk-score">{score:.0f}</div>{c.score_bar_html(score)}</div>'
         f'<div><div class="rk-sub">Positions</div><div>{round(r.get("avg_position_count") or 0)}</div></div>'
         f'<div><div class="rk-sub">Quarters</div><div>{int(r.get("quarters_of_data") or 0)}</div></div>'
         f'<div><div class="rk-sub">Turnover</div><div>{c.fmt_pct(r.get("avg_turnover_rate"), signed=False)}</div></div>'
-        f'<div><div class="rk-sub">TWS</div><div>{c.fmt_pct(r.get("tws_raw"))}</div></div>'
+        f'<div><div class="rk-sub">TWS</div>'
+        f'<div style="color:{c.net_change_color(r.get("tws_raw"))}">{c.fmt_pct(r.get("tws_raw"))}</div></div>'
         '</div>'
     )
 
@@ -35,7 +36,7 @@ def _fund_detail(fund_id: str, fund_name: str) -> None:
     if not qps.empty:
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=qps["quarter_date"], y=qps["qps_excess"],
-                                 mode="lines+markers", line=dict(color="#0071e3", width=2),
+                                 mode="lines+markers", line=dict(color=c.ACCENT, width=2),
                                  name="Excess QPS"))
         fig.update_layout(height=260, margin=dict(l=10, r=10, t=10, b=10),
                           yaxis_tickformat=".0%", paper_bgcolor="rgba(0,0,0,0)",
@@ -76,9 +77,13 @@ def render_fund_rankings() -> None:
     with st.container():
         col1, col2 = st.columns([3, 1])
         with col2:
-            sort_col = st.selectbox("Sort by",
-                                    ["rank", "final_score", "avg_aum", "avg_position_count"],
-                                    index=0, key="fund_sort")
+            # rank IS final_score order (rank 1 = highest score), so offering
+            # both sorts is redundant — score sort removed.
+            sort_col = st.selectbox(
+                "Sort by", ["rank", "avg_aum", "avg_position_count"],
+                index=0, key="fund_sort",
+                format_func=lambda c: {"rank": "Rank", "avg_aum": "Avg AUM",
+                                       "avg_position_count": "Positions"}[c])
         with col1:
             score_rng = st.slider("Score range", 0, 100, (0, 100), key="fund_score_rng")
     view = c.apply_filters_sort(
