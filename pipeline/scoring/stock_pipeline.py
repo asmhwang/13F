@@ -16,6 +16,40 @@ from pipeline.scoring import adapter
 _MIN_TRAIN_ROWS = 8          # below this, skip the fit and fall back to fund_conviction
 _TRADING_DAYS_52W = 252
 
+# Filtered-output gates.
+#   The original spec required >=3 holders, intending "stocks multiple top funds
+#   agree on". In practice concentrated funds only co-hold mega-caps (which fail
+#   the small/mid-cap market-cap band), and never co-hold small/mid-caps — so
+#   >=2 in-band consensus is structurally empty. Per the spec's "revisit after
+#   first run" note this threshold is lowered to 1, reframing the filtered tab as
+#   "top-fund high-conviction small/mid-cap ideas".
+_MIN_FILTERED_HOLDERS = 1
+_FILTERED_MCAP_MIN = 300_000_000
+_FILTERED_MCAP_MAX = 4_000_000_000
+_FILTERED_RANGE_MIN = 0.1
+_FILTERED_RANGE_MAX = 0.9
+
+
+def passes_filtered_gate(
+    *,
+    market_cap: float | None,
+    range_position: float | None,
+    holder_count: int,
+    confidence_flag: str,
+    min_holders: int = _MIN_FILTERED_HOLDERS,
+) -> bool:
+    """Whether a ranked stock qualifies for the filtered (investable) output:
+    non-Low confidence, small/mid-cap, mid 52wk range, and held by >= min_holders
+    of the ranked funds."""
+    return (
+        confidence_flag != "Low"
+        and market_cap is not None
+        and _FILTERED_MCAP_MIN <= market_cap <= _FILTERED_MCAP_MAX
+        and range_position is not None
+        and _FILTERED_RANGE_MIN <= range_position <= _FILTERED_RANGE_MAX
+        and holder_count >= min_holders
+    )
+
 
 def qualifying_funds(conn: sqlite3.Connection) -> dict[str, float]:
     """{fund_id: final_score} for funds in the top half of fund_rankings
@@ -434,17 +468,18 @@ def run_stock_pipeline(db_path: Path = DB_PATH) -> dict:
                  (f["pe_ratio"] if f else None), (f["pe_available"] if f else None),
                  (f["gross_margin_pct"] if f else None)))
 
-        # filtered output: confidence != Low, 300M<=mktcap<=4B, 0.1<=range<=0.9, holders>=3
+        # filtered output: confidence != Low, small/mid-cap, mid 52wk range,
+        # held by >= _MIN_FILTERED_HOLDERS funds (see passes_filtered_gate).
         frank = 0
         for t in ranked:
             row = conn.execute(
                 "SELECT market_cap, range_position, holder_count, confidence_flag, sector, company_name, "
                 "sector_adjusted_score FROM stock_rankings_raw WHERE ticker = ?", (t,)).fetchone()
             mc, rp = row["market_cap"], row["range_position"]
-            if (row["confidence_flag"] != "Low" and mc is not None
-                    and 300_000_000 <= mc <= 4_000_000_000
-                    and rp is not None and 0.1 <= rp <= 0.9
-                    and row["holder_count"] >= 3):
+            if passes_filtered_gate(
+                    market_cap=mc, range_position=rp,
+                    holder_count=row["holder_count"],
+                    confidence_flag=row["confidence_flag"]):
                 frank += 1
                 conn.execute(
                     "INSERT INTO stock_rankings_filtered(ticker,rank,company_name,sector,"

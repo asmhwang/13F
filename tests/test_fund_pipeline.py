@@ -40,17 +40,28 @@ def test_weed_funds_flags_each_reason(tmp_path):
     fg = _add_filing(conn, "good", cq, "2025-02-10", "g_now")
     _add_holding(conn, fg, "CA", 50)       # $50k
     _add_holding(conn, fg, "CB", 60)
-    # BIG: a single position over $100M (100000 thousand)
+    # BIG: a single position over $200M (200000 thousand) limit
     conn.execute("INSERT INTO filers(cik,name) VALUES ('big','Big Fund')")
     _add_filing(conn, "big", "2015-03-31", "2015-05-10", "b_old")
     fb = _add_filing(conn, "big", cq, "2025-02-10", "b_now")
-    _add_holding(conn, fb, "CA", 200000)   # $200M
-    # MANY: more than 30 positions
+    _add_holding(conn, fb, "CA", 250000)   # $250M
+    # MANY: more than 55 positions
     conn.execute("INSERT INTO filers(cik,name) VALUES ('many','Many Fund')")
     _add_filing(conn, "many", "2015-03-31", "2015-05-10", "m_old")
     fm = _add_filing(conn, "many", cq, "2025-02-10", "m_now")
-    for i in range(31):
+    for i in range(56):
         _add_holding(conn, fm, f"C{i:02d}", 10)
+    # MID: a $150M position is now within the broadened $200M limit -> eligible
+    conn.execute("INSERT INTO filers(cik,name) VALUES ('mid','Mid Fund')")
+    _add_filing(conn, "mid", "2015-03-31", "2015-05-10", "mid_old")
+    fmid = _add_filing(conn, "mid", cq, "2025-02-10", "mid_now")
+    _add_holding(conn, fmid, "CA", 150000)   # $150M -> ok
+    # BROAD: 40 positions is now within the broadened 55-position limit -> eligible
+    conn.execute("INSERT INTO filers(cik,name) VALUES ('broad','Broad Fund')")
+    _add_filing(conn, "broad", "2015-03-31", "2015-05-10", "broad_old")
+    fbr = _add_filing(conn, "broad", cq, "2025-02-10", "broad_now")
+    for i in range(40):
+        _add_holding(conn, fbr, f"D{i:02d}", 10)
     # YOUNG: less than 5 years of history
     conn.execute("INSERT INTO filers(cik,name) VALUES ('young','Young Fund')")
     fy = _add_filing(conn, "young", cq, "2025-02-10", "y_now")
@@ -65,6 +76,8 @@ def test_weed_funds_flags_each_reason(tmp_path):
     res = dict(conn.execute(
         "SELECT fund_id, fail_reason FROM fund_eligibility").fetchall())
     assert res["good"] is None
+    assert res["mid"] is None
+    assert res["broad"] is None
     assert res["big"] == "position_too_large"
     assert res["many"] == "too_many_positions"
     assert res["young"] == "insufficient_history"
@@ -72,6 +85,7 @@ def test_weed_funds_flags_each_reason(tmp_path):
     elig = dict(conn.execute(
         "SELECT fund_id, eligible FROM fund_eligibility").fetchall())
     assert elig["good"] == 1 and elig["big"] == 0
+    assert elig["mid"] == 1 and elig["broad"] == 1
 
 
 def _resolve(conn, cusip, ticker):
@@ -333,7 +347,7 @@ def test_run_fund_pipeline_end_to_end(tmp_path):
     # Big fund: long history + filed current quarter + one $200M position.
     _add_filing(conn, "big", "2015-03-31", "2015-05-10", "bold")
     fb = _add_filing(conn, "big", cq, "2026-02-10", "bnow")
-    _add_holding(conn, fb, "CA", 200000)
+    _add_holding(conn, fb, "CA", 250000)
     conn.commit()
 
     summary = fund_pipeline.run_fund_pipeline(_db_)
@@ -377,7 +391,7 @@ def test_run_fund_pipeline_idempotent_drops_ineligible(tmp_path):
 
     _add_filing(conn, "big", "2015-03-31", "2015-05-10", "bold")
     fb = _add_filing(conn, "big", cq, "2026-02-10", "bnow")
-    _add_holding(conn, fb, "CA", 200000)
+    _add_holding(conn, fb, "CA", 250000)
     conn.commit()
 
     # First run: 'win' should be ranked #1.
@@ -393,7 +407,7 @@ def test_run_fund_pipeline_idempotent_drops_ineligible(tmp_path):
     conn.execute(
         "INSERT INTO holdings(filing_id,cusip,name_of_issuer,value_thousands,shares,put_call) "
         "VALUES (?,?,?,?,?,?)",
-        (wnow_fid, "CBIG", "Big Position", 200000, 10, None))
+        (wnow_fid, "CBIG", "Big Position", 250000, 10, None))
     conn.commit()
 
     # Second run: 'win' is now ineligible and must be absent from fund_rankings

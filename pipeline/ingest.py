@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pipeline import database, edgar
-from pipeline.parser import parse_auto
+from pipeline.parser import parse_auto, detect_value_divisor as parse_value_divisor
 
 
 def _already_ingested(conn, accession_number: str) -> bool:
@@ -122,12 +122,15 @@ def ingest_filer(
             print("    [SKIP] no holdings parsed")
             continue
 
-        # SEC rule change: filings for periods ending >= 2022-12-31 report
-        # <value> in raw dollars, not thousands. Normalize back to thousands.
-        if period >= "2022-12-31" and xml_url.lower().endswith(".xml"):
+        # Normalize <value> to thousands-of-dollars. 13F unit conventions are
+        # mixed (post-2022 most filers switched to whole dollars; some — Baupost,
+        # T. Rowe, Tieton — still report thousands), so detect per filing rather
+        # than by period. See parser.detect_value_divisor.
+        divisor = parse_value_divisor(holdings)
+        if divisor != 1:
             for h in holdings:
                 if h.get("value_thousands") is not None:
-                    h["value_thousands"] = h["value_thousands"] // 1000
+                    h["value_thousands"] = h["value_thousands"] // divisor
 
         print(f"    Parsed {len(holdings)} holdings")
 
