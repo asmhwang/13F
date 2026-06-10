@@ -61,6 +61,7 @@ def rankings_meta(conn: sqlite3.Connection | None = None) -> dict:
 
 def stock_rankings(kind: str = "raw", conn: sqlite3.Connection | None = None) -> pd.DataFrame:
     """Raw or filtered stock rankings, best first. kind in {'raw','filtered'}."""
+    assert kind in {"raw", "filtered"}, f"unknown rankings kind: {kind!r}"
     table = "stock_rankings_filtered" if kind == "filtered" else "stock_rankings_raw"
     c = _conn(conn)
     return pd.read_sql(f"SELECT * FROM {table} ORDER BY rank ASC", c)
@@ -80,16 +81,11 @@ def stock_holders(ticker: str, conn: sqlite3.Connection | None = None) -> pd.Dat
             FROM filings f GROUP BY f.cik
         ),
         latest_filing AS (
-            -- one filing per (cik, latest period): newest amendment wins, matching
-            -- adapter.latest_filing_id's `filed_date DESC, id DESC` resolution so a
-            -- 13F-HR + 13F-HR/A pair is not double-counted.
-            SELECT f.id, f.cik FROM filings f
-            JOIN latest l ON l.cik = f.cik AND l.period = f.period_of_report
-            WHERE f.id = (
-                SELECT f2.id FROM filings f2
-                WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
-                ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
-            )
+            -- the effective filing set per (cik, latest period): base filing
+            -- plus NEW HOLDINGS amendments; RESTATEMENT amendments replace the
+            -- base (see database.rebuild_effective_filings).
+            SELECT ef.filing_id AS id, ef.cik FROM effective_filings ef
+            JOIN latest l ON l.cik = ef.cik AND l.period = ef.period_of_report
         ),
         fund_total AS (
             SELECT lf.cik, SUM(h.value_thousands) AS total_k

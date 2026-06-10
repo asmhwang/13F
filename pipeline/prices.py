@@ -43,8 +43,11 @@ def init_schema(conn: sqlite3.Connection | None = None, db_path: Path = DB_PATH)
 def parse_chart(payload: dict) -> list[dict]:
     """
     Turn a Yahoo v8 chart JSON payload into [{date, close, adj_close}, ...].
-    Rows with a null close (non-trading gaps) are skipped. When adjclose is
-    absent for a row, close is used as the adjusted value.
+    Rows with a null close (non-trading gaps) are skipped. When the series has
+    no adjclose block at all, close is used as the adjusted value; when the
+    block exists but a row's adjclose is null, the row is skipped — substituting
+    the unadjusted close would splice mixed-basis bars into an adjusted series
+    and corrupt any return spanning that row.
     """
     results = (payload.get("chart") or {}).get("result") or []
     if not results:
@@ -56,12 +59,18 @@ def parse_chart(payload: dict) -> list[dict]:
     adj_block = (indicators.get("adjclose") or [{}])[0]
     closes = quote_block.get("close") or []
     adjs = adj_block.get("adjclose") or []
+    has_adj_block = bool(adjs)
     rows: list[dict] = []
     for i, ts in enumerate(timestamps):
         close = closes[i] if i < len(closes) else None
         if close is None:
             continue
-        adj = adjs[i] if i < len(adjs) and adjs[i] is not None else close
+        if has_adj_block:
+            adj = adjs[i] if i < len(adjs) else None
+            if adj is None:
+                continue
+        else:
+            adj = close
         d = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
         rows.append({"date": d, "close": close, "adj_close": adj})
     return rows
@@ -191,11 +200,8 @@ def coverage_report(conn: sqlite3.Connection) -> dict:
     row = conn.execute(
         """
         WITH latest_filings AS (
-            SELECT f.id FROM filings f
-            WHERE f.period_of_report = :q
-              AND f.id = (SELECT f2.id FROM filings f2
-                          WHERE f2.cik = f.cik AND f2.period_of_report = :q
-                          ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1)
+            SELECT ef.filing_id AS id FROM effective_filings ef
+            WHERE ef.period_of_report = :q
         ),
         held AS (
             SELECT s.ticker AS ticker, SUM(h.value_thousands) AS val
@@ -279,18 +285,32 @@ def _already_covered(conn: sqlite3.Connection, ticker: str, start: str, end: str
 
 def _log_fetch(conn: sqlite3.Connection, ticker: str,
                first_date: str | None, last_date: str | None, status: str) -> None:
-    conn.execute(
-        """
-        INSERT INTO price_fetch_log (ticker, first_date, last_date, status, fetched_at)
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(ticker) DO UPDATE SET
-            first_date = excluded.first_date,
-            last_date  = excluded.last_date,
-            status     = excluded.status,
-            fetched_at = CURRENT_TIMESTAMP
-        """,
-        (ticker, first_date, last_date, status),
-    )
+    if status == "error":
+        # Preserve any previously recorded coverage — a transient failure must
+        # not wipe a good first_date/last_date and force a full refetch.
+        conn.execute(
+            """
+            INSERT INTO price_fetch_log (ticker, first_date, last_date, status, fetched_at)
+            VALUES (?, NULL, NULL, 'error', CURRENT_TIMESTAMP)
+            ON CONFLICT(ticker) DO UPDATE SET
+                status     = 'error',
+                fetched_at = CURRENT_TIMESTAMP
+            """,
+            (ticker,),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO price_fetch_log (ticker, first_date, last_date, status, fetched_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(ticker) DO UPDATE SET
+                first_date = excluded.first_date,
+                last_date  = excluded.last_date,
+                status     = excluded.status,
+                fetched_at = CURRENT_TIMESTAMP
+            """,
+            (ticker, first_date, last_date, status),
+        )
     conn.commit()
 
 
@@ -320,11 +340,26 @@ def ingest_prices(db_path: Path = DB_PATH, force: bool = False,
                 rows = fetch_prices(t, start, end)
                 if rows:
                     store_prices(conn, t, rows)
-                    _log_fetch(conn, t, rows[0]["date"], rows[-1]["date"], "ok")
+                    # Log the REQUESTED window, not the returned bar range:
+                    # a ticker that listed after `start` (or a weekend/holiday
+                    # quarter-end) never returns a bar at the window start, and
+                    # logging the returned range would refetch it in full on
+                    # every run. Yahoo gave everything it has for the request.
+                    _log_fetch(conn, t,
+                               min(start, rows[0]["date"]),
+                               max(end, rows[-1]["date"]), "ok")
                     fetched += 1
                 else:
                     _log_fetch(conn, t, None, None, "no_data")
                 time.sleep(_RATE_SLEEP)
+            except requests.HTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 404:
+                    # Delisted/unknown symbol — permanent, don't retry forever.
+                    _log_fetch(conn, t, None, None, "no_data")
+                else:
+                    print(f"  [ERROR] {t}: {exc}")
+                    _log_fetch(conn, t, None, None, "error")
+                failed += 1
             except Exception as exc:                # noqa: BLE001 — log and continue
                 print(f"  [ERROR] {t}: {exc}")
                 _log_fetch(conn, t, None, None, "error")

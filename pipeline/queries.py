@@ -5,6 +5,7 @@ All functions accept an optional sqlite3.Connection; if omitted they open
 their own connection using the default DB_PATH.
 """
 
+import math
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,12 @@ from pipeline.database import DB_PATH, get_connection
 
 
 def _conn(conn: sqlite3.Connection | None, db_path: Path = DB_PATH) -> sqlite3.Connection:
-    return conn or get_connection(db_path)
+    c = conn or get_connection(db_path)
+    # Natural log used by conviction_scores. get_connection registers it, but a
+    # caller-supplied raw sqlite3 connection would otherwise error (or silently
+    # use SQLite's built-in base-10 log on 3.35+). Registration is idempotent.
+    c.create_function("LOG", 1, math.log)
+    return c
 
 
 # ---------------------------------------------------------------------------
@@ -33,13 +39,11 @@ def top_holdings(
     return c.execute(
         """
         WITH latest_filings AS (
-            SELECT f.id, f.cik FROM filings f
-            WHERE f.period_of_report = ?
-              AND f.id = (
-                  SELECT f2.id FROM filings f2
-                  WHERE f2.cik = f.cik AND f2.period_of_report = ?
-                  ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
-              )
+            -- effective set per (cik, period): base filing + NEW HOLDINGS
+            -- amendments (RESTATEMENT amendments replace the base)
+            SELECT ef.filing_id AS id, ef.cik
+            FROM effective_filings ef
+            WHERE ef.period_of_report = ?
         )
         SELECT
             h.cusip,
@@ -55,7 +59,7 @@ def top_holdings(
         ORDER BY total_value_thousands DESC
         LIMIT ?
         """,
-        (period, period, top_n),
+        (period, top_n),
     ).fetchall()
 
 
@@ -78,14 +82,12 @@ def position_changes(
     return c.execute(
         """
         WITH old_latest AS (
-            SELECT id FROM filings
+            SELECT filing_id AS id FROM effective_filings
             WHERE cik = ? AND period_of_report = ?
-            ORDER BY filed_date DESC, id DESC LIMIT 1
         ),
         new_latest AS (
-            SELECT id FROM filings
+            SELECT filing_id AS id FROM effective_filings
             WHERE cik = ? AND period_of_report = ?
-            ORDER BY filed_date DESC, id DESC LIMIT 1
         ),
         old_h AS (
             SELECT h.cusip, MAX(h.name_of_issuer) AS name_of_issuer,
@@ -119,7 +121,8 @@ def position_changes(
                 WHEN o.cusip IS NULL              THEN 'new'
                 WHEN n.cusip IS NULL              THEN 'closed'
                 WHEN n.value_thousands > o.value_thousands THEN 'increased'
-                ELSE 'decreased'
+                WHEN n.value_thousands < o.value_thousands THEN 'decreased'
+                ELSE 'unchanged'
             END                                   AS status
         FROM new_h n
         FULL OUTER JOIN old_h o ON o.cusip = n.cusip
@@ -155,27 +158,23 @@ def conviction_scores(
     return c.execute(
         """
         WITH latest_filings AS (
-            SELECT f.id, f.cik FROM filings f
-            WHERE f.period_of_report = ?
-              AND f.id = (
-                  SELECT f2.id FROM filings f2
-                  WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
-                  ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
-              )
+            SELECT ef.filing_id AS id, ef.cik
+            FROM effective_filings ef
+            WHERE ef.period_of_report = ?
         ),
-        prior_period AS (
-            SELECT MAX(period_of_report) AS period
-            FROM filings
+        -- Each filer's OWN most recent prior period. A single global prior
+        -- period would make every position of a filer that skipped that exact
+        -- period look freshly opened, inflating its buyer ratio.
+        filer_prior AS (
+            SELECT cik, MAX(period_of_report) AS period
+            FROM effective_filings
             WHERE period_of_report < ?
+            GROUP BY cik
         ),
         prior_filings AS (
-            SELECT f.id, f.cik FROM filings f
-            JOIN prior_period pp ON f.period_of_report = pp.period
-            WHERE f.id = (
-                SELECT f2.id FROM filings f2
-                WHERE f2.cik = f.cik AND f2.period_of_report = f.period_of_report
-                ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
-            )
+            SELECT ef.filing_id AS id, ef.cik
+            FROM effective_filings ef
+            JOIN filer_prior fp ON fp.cik = ef.cik AND fp.period = ef.period_of_report
         ),
         filer_aum AS (
             SELECT lf.cik, SUM(h.value_thousands) AS total_aum
@@ -207,14 +206,15 @@ def conviction_scores(
         ),
         buyer_flags AS (
             SELECT pw.cusip, pw.cik,
-                -- NULL when no prior period exists → COALESCE to 0.5 default
+                -- NULL when this filer has no prior filing → COALESCE to 0.5
                 CASE
-                    WHEN (SELECT period FROM prior_period) IS NULL THEN NULL
-                    WHEN ph.prior_value IS NULL                    THEN 1   -- new position
-                    WHEN pw.value_thousands > ph.prior_value       THEN 1   -- increased
+                    WHEN fp.cik IS NULL                      THEN NULL
+                    WHEN ph.prior_value IS NULL              THEN 1   -- new position
+                    WHEN pw.value_thousands > ph.prior_value THEN 1   -- increased
                     ELSE 0
                 END AS is_buyer
             FROM position_weights pw
+            LEFT JOIN filer_prior fp ON fp.cik = pw.cik
             LEFT JOIN prior_holdings ph ON ph.cusip = pw.cusip AND ph.cik = pw.cik
         )
         SELECT
@@ -254,19 +254,23 @@ def filer_summary(
     row = c.execute(
         """
         WITH latest AS (
-            SELECT id FROM filings
+            SELECT filing_id AS id FROM effective_filings
             WHERE cik = ? AND period_of_report = ?
-            ORDER BY filed_date DESC, id DESC LIMIT 1
         )
         SELECT
             COUNT(*)                   AS num_positions,
-            SUM(value_thousands)       AS total_aum_thousands,
-            MAX(value_thousands)       AS largest_position_thousands,
-            COUNT(DISTINCT h.cusip)    AS unique_cusips
-        FROM holdings h
-        JOIN latest l ON h.filing_id = l.id
-        WHERE (h.put_call IS NULL OR h.put_call = '')
-          AND h.value_thousands > 0
+            SUM(v)                     AS total_aum_thousands,
+            MAX(v)                     AS largest_position_thousands,
+            COUNT(*)                   AS unique_cusips
+        FROM (
+            -- aggregate per CUSIP so SOLE/SHARED split rows count as one position
+            SELECT SUM(h.value_thousands) AS v
+            FROM holdings h
+            JOIN latest l ON h.filing_id = l.id
+            WHERE (h.put_call IS NULL OR h.put_call = '')
+              AND h.value_thousands > 0
+            GROUP BY h.cusip
+        )
         """,
         (cik, period),
     ).fetchone()

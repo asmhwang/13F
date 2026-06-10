@@ -19,7 +19,7 @@ import plotly.io as pio
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent))
-from pipeline.database import DB_PATH, ensure_indexes, get_connection
+from pipeline.database import DB_PATH, ensure_effective_filings, ensure_indexes, get_connection
 from pipeline.edgar import search_filers_by_name
 from pipeline.queries import conviction_scores as _conviction_scores
 
@@ -656,9 +656,9 @@ def load_holdings(cik: str, period: str) -> pd.DataFrame:
     df = pd.read_sql(
         """
         WITH latest AS (
-            SELECT id FROM filings
+            -- effective filing set: base + NEW HOLDINGS amendments
+            SELECT filing_id AS id FROM effective_filings
             WHERE cik = ? AND period_of_report = ?
-            ORDER BY filed_date DESC, id DESC LIMIT 1
         )
         SELECT h.cusip,
                COALESCE(s.ticker, MAX(h.name_of_issuer)) AS ticker,
@@ -688,13 +688,9 @@ def load_all_holdings(period: str) -> pd.DataFrame:
     df = pd.read_sql(
         """
         WITH latest_filings AS (
-            SELECT f.id, f.cik FROM filings f
-            WHERE f.period_of_report = ?
-              AND f.id = (
-                  SELECT f2.id FROM filings f2
-                  WHERE f2.cik = f.cik AND f2.period_of_report = ?
-                  ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1
-              )
+            -- effective filing set: base + NEW HOLDINGS amendments
+            SELECT filing_id AS id, cik FROM effective_filings
+            WHERE period_of_report = ?
         )
         SELECT lf.cik, fi.name AS filer_name,
                h.cusip,
@@ -711,7 +707,7 @@ def load_all_holdings(period: str) -> pd.DataFrame:
         GROUP BY lf.cik, fi.name, h.cusip, h.put_call, s.ticker
         ORDER BY value_thousands DESC
         """,
-        conn, params=(period, period),
+        conn, params=(period,),
     )
     conn.close()
     return df
@@ -743,6 +739,21 @@ def load_conviction_scores(period: str, min_filers: int) -> pd.DataFrame:
 inject_css()
 rk_theme.inject()
 ensure_indexes()
+
+
+@st.cache_resource
+def _ensure_effective() -> bool:
+    """One-time guard: build effective_filings on databases ingested before
+    amendment-type resolution existed (all holdings queries depend on it)."""
+    conn = get_connection()
+    try:
+        ensure_effective_filings(conn)
+    finally:
+        conn.close()
+    return True
+
+
+_ensure_effective()
 
 if "search_results" not in st.session_state:
     st.session_state.search_results = []
@@ -839,10 +850,15 @@ with st.sidebar:
             threading.Thread(target=_run_refresh, daemon=True).start()
             st.rerun()
         if _rs["done"]:
-            st.success("Refresh complete.")
             st.cache_data.clear()
             with _refresh_lock:
                 _refresh_status["done"] = False
+            # Filer/period lists were loaded earlier in this run from the stale
+            # cache — rerun once so the sidebar reflects the refreshed data.
+            st.session_state["_refresh_toast"] = True
+            st.rerun()
+        elif st.session_state.pop("_refresh_toast", False):
+            st.success("Refresh complete.")
         elif _rs["error"]:
             st.error(f"Refresh failed: {_rs['error']}")
             with _refresh_lock:
