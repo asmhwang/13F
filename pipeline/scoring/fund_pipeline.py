@@ -16,8 +16,9 @@ from pipeline.scoring import adapter
 
 _LAMBDA = 0.85
 _MIN_SCOREABLE_QUARTERS = 6
-_POSITION_LIMIT_THOUSANDS = 100_000      # $100M
-_MAX_POSITIONS = 30
+_POSITION_LIMIT_THOUSANDS = 200_000      # $200M — broadened from $100M so mid-size
+_MAX_POSITIONS = 55                      # concentrated funds (the source of multi-fund
+                                         # consensus on shared names) are not weeded out
 _OHW_THRESHOLD = 0.50
 _OHW_DISCOUNT = 0.75
 

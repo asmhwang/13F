@@ -1,12 +1,12 @@
 # 13F Ranking Feature — Build Status & Resume Guide
 
-**Last updated:** 2026-06-08
-**Branch:** P1–P4 on `feat/13f-ranking`, P5 on `feat/13f-website` — both merged to `main` (latest merge `fba117c`), pushed to `origin`.
+**Last updated:** 2026-06-09
+**Branch:** P1–P4 on `feat/13f-ranking`, P5 on `feat/13f-website` — both merged to `main`. Unit-bug fix + filer expansion (2026-06-09) committed on `fix/13f-value-units-and-filer-expansion` (`86e6929`), branched off `main`, **not yet merged or pushed**.
 **Resume anchor:** this file. Read it first after clearing chat.
 
 This feature turns ingested 13F filings into two ranked outputs — **Fund Rankings** (which small, concentrated funds pick well long-term) and **Stock Rankings** (which stocks those funds are most convicted on) — both as raw + filtered views, shown on the Streamlit site.
 
-**Status in one line: backend (P1–P4) + website (P5) are DONE and live; price/fundamental data is fully backfilled. The ONLY thing left is adding more small filers so more than one fund ranks.**
+**Status in one line: DONE and live. Backend (P1–P4) + website (P5) complete; a critical 13F unit-of-value bug was found and fixed; 24 small/mid filers ingested → 9 funds now rank (was 1), 135 raw + 9 filtered stocks. 71 tests pass.**
 
 Source specs: `docs/superpowers/specs/2026-06-07-13f-ranking-design.md`, `docs/superpowers/specs/2026-06-07-13f-rankings-website-design.md`
 Per-phase plans: `docs/superpowers/plans/2026-06-07-13f-*.md`
@@ -61,14 +61,30 @@ Ran the full chain `prices → fundamentals → fund_pipeline → stock_pipeline
 
 ---
 
-## What's LEFT (one thing)
+## Add-small-filers session (2026-06-09) — DONE ✅
 
-**Add more small filers.** Everything else is done. The rankings still show **1 fund (Baupost)** and an **empty filtered stock list** — not a bug, a data-population gap:
-- 30 of the 31 seed filers fail the "small concentrated fund" weed (single position > $100M, or > 30 positions, or < 5yr history, or inactive). Only **Baupost** passes.
-- With 1 ranked fund, every stock has `holder_count = 1`, so the filtered gate (`holder_count ≥ 3`) yields **0** by construction. The other filtered gates already pass (mcap 300M–4B: 5 stocks, confidence≠Low: 15, 52wk-range 0.1–0.9: 17).
-- **To unblock:** ingest ≥2 more genuinely small, concentrated funds (search EDGAR or supply CIKs) → re-run `fund_pipeline` then `stock_pipeline` (or just `bash refresh.sh`). Once ≥3 funds rank and ≥3 hold the same stock, multi-fund signals + the filtered tab populate.
+Goal was "add small filers so >1 fund ranks." Doing it surfaced a critical data bug; fixing it + broadening the fund universe got us to **9 ranked funds, 135 raw + 9 filtered stocks**.
 
-Optional alternative (no new filers): the filtered `holder_count ≥ 3` threshold is a spec-documented "revisit after first run" knob — lowering it to 1 in `pipeline/scoring/stock_pipeline.py` would surface a filtered list against the single fund immediately.
+### 1. Critical fix — 13F value-unit bug (was corrupting ~4 funds 1000×)
+- **Root cause:** 13F `<value>` units are *mixed* post-2022 — most filers switched to whole dollars, but several still report thousands (price-validated: Baupost 14/14, T. Rowe 15/15, Tieton 14/14, Duquesne 13/14; partial: RenTech, Tweedy Browne, Wedgewood, GreenhavenRd, Giverny, Baillie Gifford). The old blanket `period >= "2022-12-31" → //1000` (ingest.py) corrupted the thousands-filers 1000×.
+- **Proof:** Baupost 2026-03-31 AMZN raw XML `<value>649543</value>`, 3,118,754 shares → $208/sh only if value is thousands ($649.5M) — matches real AMZN. The `//1000` had stored it as $649K.
+- **Consequence:** Baupost was the *only* "ranked fund" in the old baseline **purely because of this bug** — its real $649M positions looked like $649K and slipped under the $100M weed gate. With correct units Baupost's max position is $650M → correctly weeded out (`position_too_large`).
+- **Fix (TDD):** new pure `parser.detect_value_divisor(holdings)` — median implied price/share; `>= 1` ⇒ dollars (÷1000), else already-thousands (÷1). Self-contained at ingest (no prices-table dependency), subsumes the pre/post-2022 split. Wired into `ingest.py`. Re-ingested all **3,695** filings `--force`; Baupost AUM $0.01B→$5.12B; post-2022 corruption 79 filings → 0. Tests: `tests/test_value_units.py` (5).
+
+### 2. Broadened the fund weed gate (user-approved) — `pipeline/scoring/fund_pipeline.py`
+- `_MAX_POSITIONS` 30→**55**, `_POSITION_LIMIT_THOUSANDS` 100_000→**200_000** ($200M).
+- **Why:** with correct units the strict gate left only 2 tiny funds (GreenhavenRd, Wedgewood) that **share zero stocks** — the filtered tab was structurally impossible. The multi-fund consensus on mega-caps lives in slightly-larger concentrated funds the strict gate rejected. Broadening admits them. Tests updated (mid/broad eligible fixtures).
+
+### 3. Filtered-tab holder_count knob 3→1 (user-approved) — `pipeline/scoring/stock_pipeline.py`
+- Even with 9 funds, **no** small/mid-cap (300M–4B) is co-held by ≥2 of the top funds — concentrated funds only co-hold mega-caps (GOOGL/AAPL ~$4T, above the cap). The "≥3 funds agree on a 300M–4B stock" premise is structurally empty.
+- Lowered `_MIN_FILTERED_HOLDERS` 3→1 (the spec's "revisit after first run" knob), reframing the filtered tab as **"top-fund high-conviction small/mid-cap ideas"**. Extracted a testable `passes_filtered_gate(...)`. Tab now shows 9 names (HRMY, BBSI, AMR, CUBI, MYE, NBBK, ZUMZ, VPG, ACIC). Test: `test_passes_filtered_gate`.
+
+### 4. Filers ingested (24 new CIKs)
+Eligible after broadening (9 ranked): Dalal Street/Pabrai (#1, score 100), Tieton, Giverny, Semper Augustus, Wedgewood, Voss, Mar Vista, Greenhaven Road, Punch Card. Ingested-but-weeded (honest fails): Semper/Voss/etc. were *admitted*; ineligible ones = inactive (Cove Street, Roumell, Ensemble, Mittleman, Intrepid, Sasco, Aravt — all stopped filing) or too-broad (Gator 90 pos, Pinnacle 955, Donald Smith 61, Polaris 84) or `<5yr` (Alta Fox, Praetorian). Also added `EDGAR_USER_AGENT` to `.env` (was missing → IP-block risk).
+
+### Optional follow-ups (not blocking)
+- **Backfill prices for 145 missing eligible-fund tickers** (current eligible-fund coverage 82%; missing ones are mostly delisted). A full re-price of the new funds' deep history (~2,900 tickers) was started then **killed** — Yahoo was throttling at ~15s/ticker (~12h ETA) and most are delisted junk held only by ineligible funds. Run a *targeted* fetch later if return precision matters.
+- Re-run `bash refresh.sh` quarterly as before (chain unchanged).
 
 ---
 
@@ -85,14 +101,15 @@ Optional alternative (no new filers): the filtered `holder_count ≥ 3` threshol
 
 ---
 
-## Data reality (post-backfill 2026-06-08 — what's real, what's still thin)
+## Data reality (post-2026-06-09 session — what's real)
 
-- **Prices: real.** 98.2% value-weighted coverage (9,914 tickers, ~20.6M rows). The stock regression now trains on real 3yr returns (no more fund_conviction fallback).
-- **Fundamentals: real** for the 22-stock universe (sector, market cap, P/E, gross margin all populated).
-- **Still 1 ranked fund: Baupost Group** (`cik 1061768`). 30 of 31 seed filers fail the small-concentrated weed (`position_too_large` / `too_many_positions` / `inactive` / `insufficient_history`). This is the **only** remaining gap — see "What's LEFT".
-- **`stock_rankings_filtered` = 0** purely because `holder_count ≥ 3` is impossible with 1 fund (every stock has holder_count = 1). NOT market_cap (now populated) and NOT prices (now 98%).
-- CUSIP resolution ~36% (15,892 / 44,450 securities have tickers) — many are bonds/foreign/expired; widening it is optional, not blocking.
-- **All correct given the data.** Adding small filers is the single lever that makes fund + filtered-stock rankings rich.
+- **Value units: now correct per-filing** (see fix #1 above). Baupost et al. no longer 1000× off.
+- **Prices: real**, ~98% value-weighted on the established universe; new eligible-fund coverage 82% (145 tickers, mostly delisted, optionally backfillable).
+- **Fundamentals: real** for the ranked-stock universe (213 tickers, 198 with sector; market cap, P/E, gross margin populated).
+- **9 ranked funds** (was 1): Dalal Street/Pabrai #1, then Tieton, Giverny, Semper Augustus, Wedgewood, Voss, Mar Vista, Greenhaven Road, Punch Card. Latest quarter 2026-03-31.
+- **Stock rankings:** 135 raw, **9 filtered** (small/mid-cap conviction picks). `stock_rankings_filtered` populated after the holder_count 3→1 knob (fix #3); ≥2-holder consensus on small/mid-caps does not exist with concentrated funds.
+- CUSIP resolution ~36% (16,374 / 45,464 securities) — many are bonds/foreign/expired; widening it is optional, not blocking.
+- **All correct given the data.**
 
 ---
 

@@ -116,7 +116,7 @@ Filings already in the database are skipped automatically. HTTP responses are ca
 
 > **Note on amendments:** When a filer files a 13F-HR/A amendment, only the most recently filed version for that period is used. All queries automatically deduplicate amendments.
 
-> **Note on SEC unit change:** Starting with periods ending on or after 2022-12-31, the SEC changed the `<value>` field in 13F XML filings from thousands of dollars to raw dollars. The pipeline normalizes this automatically on ingestion.
+> **Note on SEC unit change:** Around the 2022-12-31 reporting period the SEC moved the `<value>` field in 13F filings from thousands of dollars toward whole dollars — but adoption is uneven (large filers like Berkshire switched; others such as Baupost, T. Rowe Price, and Tieton still report in thousands). A blanket period-based rule corrupts the stragglers by 1000×, so the pipeline detects the unit **per filing** from the median implied price per share (value ÷ shares) and normalizes each filing to thousands accordingly (`pipeline/parser.py:detect_value_divisor`).
 
 ---
 

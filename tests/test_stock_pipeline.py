@@ -163,6 +163,28 @@ def test_confidence_buckets_by_thirds():
     assert flags["HI"] == "High" and flags["MID"] == "Medium" and flags["LO"] == "Low"
 
 
+def test_passes_filtered_gate():
+    g = stock_pipeline.passes_filtered_gate
+    # holder_count 1 small/mid-cap, valid range, non-Low -> passes at the
+    # default threshold of 1 (concentrated funds don't co-hold small/mid-caps,
+    # so >=2 consensus is structurally empty; see _MIN_FILTERED_HOLDERS).
+    assert g(market_cap=1.0e9, range_position=0.5, holder_count=1, confidence_flag="Medium")
+    # Low confidence is excluded
+    assert not g(market_cap=1.0e9, range_position=0.5, holder_count=1, confidence_flag="Low")
+    # market cap above the 4B cap is excluded
+    assert not g(market_cap=5.0e9, range_position=0.5, holder_count=1, confidence_flag="High")
+    # market cap below the 300M floor is excluded
+    assert not g(market_cap=2.0e8, range_position=0.5, holder_count=1, confidence_flag="High")
+    # range position outside 0.1-0.9 is excluded
+    assert not g(market_cap=1.0e9, range_position=0.95, holder_count=1, confidence_flag="High")
+    # None market_cap / range excluded
+    assert not g(market_cap=None, range_position=0.5, holder_count=1, confidence_flag="High")
+    assert not g(market_cap=1.0e9, range_position=None, holder_count=1, confidence_flag="High")
+    # the holder threshold is honored when overridden
+    assert not g(market_cap=1.0e9, range_position=0.5, holder_count=1,
+                 confidence_flag="High", min_holders=3)
+
+
 def test_run_stock_pipeline_end_to_end(tmp_path):
     _db_, conn = _db(tmp_path)
     _rank(conn, "a", "Fund A", 1, 100.0)

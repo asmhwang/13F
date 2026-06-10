@@ -426,4 +426,16 @@ SEED_FILERS = [
     ("0000080255", "T. Rowe Price Associates"),
     ("0000038777", "Franklin Resources"),
     ("0001422848", "Capital Research Global Investors"),
+    # ── Small / Mid Concentrated (added 2026-06-09; these are the funds that
+    #    actually rank — keep them in the seed list so quarterly refresh pulls
+    #    their new filings and they don't fall to 'inactive' on the next cq) ──
+    ("0001549575", "Dalal Street (Pabrai)"),
+    ("0001381954", "Tieton Capital Management"),
+    ("0001641864", "Giverny Capital"),
+    ("0001115373", "Semper Augustus Investments"),
+    ("0000859804", "Wedgewood Partners"),
+    ("0001730145", "Voss Capital"),
+    ("0001419999", "Mar Vista Investment Partners"),
+    ("0001741129", "Greenhaven Road Investment Management"),
+    ("0001631664", "Punch Card Management"),
 ]

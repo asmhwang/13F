@@ -7,8 +7,34 @@ Legacy format:  EDGAR SGML .txt submission with <TABLE> / fixed-width columns
 """
 
 import re
+import statistics
 import xml.etree.ElementTree as ET
 from typing import Any
+
+
+def detect_value_divisor(holdings: list[dict[str, Any]]) -> int:
+    """Divisor that converts each holding's raw parsed ``value_thousands`` into
+    thousands-of-dollars, accounting for mixed 13F unit conventions.
+
+    13F ``<value>`` is reported either in whole dollars (post-2022 SEC rule,
+    adopted by most filers) or still in thousands (legacy filings and
+    non-compliant filers such as Baupost / T. Rowe Price / Tieton). A blind
+    period-based rule mis-handles the stragglers, so we detect per filing by
+    the *median implied price per share* (raw value / shares): real US equity
+    prices are >= ~$1, so a median >= 1 means the values are in dollars
+    (divide by 1000); a tiny median means they are already in thousands
+    (divisor 1). Median is robust to a few junk rows. With no usable
+    share data we fall back to 1 (no division) — the historically safe
+    default for legacy / principal-only filings.
+    """
+    implied = [
+        h["value_thousands"] / h["shares"]
+        for h in holdings
+        if h.get("shares") and h.get("value_thousands")
+    ]
+    if not implied:
+        return 1
+    return 1000 if statistics.median(implied) >= 1.0 else 1
 
 # The namespace used in 13F information table XML (may vary slightly across years)
 _NS_PATTERNS = [
