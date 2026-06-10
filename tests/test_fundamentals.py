@@ -1,9 +1,9 @@
 """Tests for pipeline.fundamentals (Phase 3 current-quarter fundamentals)."""
 from unittest.mock import patch
 
+from pipeline import database, fundamentals
 from pipeline.database import get_connection, init_db
 from pipeline.scoring import adapter
-from pipeline import fundamentals
 
 
 def _db(tmp_path):
@@ -81,6 +81,7 @@ def test_universe_tickers_current_quarter_ranked_funds(tmp_path):
     conn.execute("INSERT INTO securities(cusip,ticker,name) VALUES "
                  "('CA','AAA','A'),('CB','BBB','B'),('CC','CCC','C'),('COPT','OPT','O')")
     conn.commit()
+    database.rebuild_effective_filings(conn)
 
     tickers = fundamentals.universe_tickers(conn)
     assert set(tickers) == {"AAA", "BBB"}   # ranked fund only; option excluded; unranked excluded

@@ -74,6 +74,7 @@ def test_fetch_prices_calls_http_and_parses():
     assert rows == [{"date": "2021-01-04", "close": 100.0, "adj_close": 99.0}]
 
 
+from pipeline import database
 from pipeline.database import init_db
 
 
@@ -132,6 +133,7 @@ def _seed_coverage(db):
     conn.execute("INSERT INTO securities(cusip,ticker,name) VALUES ('C_AAPL','AAPL','Apple')")
     conn.execute("INSERT INTO securities(cusip,ticker,name) VALUES ('C_MSFT','MSFT','Microsoft')")
     prices.init_schema(conn, db)
+    database.rebuild_effective_filings(conn)
     # AAPL priced at as-of and forward; MSFT not priced at all.
     prices.store_prices(conn, "AAPL", [
         {"date": "2019-03-29", "close": 50.0, "adj_close": 50.0},   # within 7d of as-of
