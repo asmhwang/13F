@@ -30,10 +30,13 @@ def fmt_money(v) -> str:
     return f"${v:.0f}"
 
 
-def fmt_pct(v) -> str:
+def fmt_pct(v, signed: bool = True) -> str:
+    """Format a fraction as a percent. signed=False for unsigned rates
+    (e.g. turnover) where a forced "+" would imply a delta."""
     if v is None or (isinstance(v, float) and pd.isna(v)):
         return "—"
-    return f"{v * 100:+.1f}%"
+    sign = "+" if signed else ""
+    return f"{v * 100:{sign}.1f}%"
 
 
 def net_change_color(v) -> str:
@@ -129,3 +132,29 @@ def ranking_list(rows_html: list[str], stagger_ms: int = 50) -> None:
 def empty_card(message: str) -> None:
     st.markdown(f'<div class="rk-wrap"><div class="rk-empty">{_html.escape(message)}</div></div>',
                 unsafe_allow_html=True)
+
+
+def inspect_select(label: str, options: list[str], key: str) -> str | None:
+    """Selectbox that should open a detail dialog exactly once per selection.
+
+    st.dialog re-opens on every rerun while its trigger condition holds, and two
+    selectboxes with sticky values (one per tab) would open two dialogs in one
+    run — a StreamlitAPIException. Gate on the change *event* instead: return the
+    pick only on the run where this selectbox changed, and reset it to the
+    placeholder on the following run so dismissal sticks and the same item can
+    be inspected again.
+    """
+    if st.session_state.get("_rk_inspect_reset") == key:
+        del st.session_state["_rk_inspect_reset"]
+        st.session_state[key] = "—"
+
+    def _mark() -> None:
+        st.session_state["_rk_inspect_pending"] = key
+
+    pick = st.selectbox(label, ["—"] + options, key=key, on_change=_mark)
+    if st.session_state.get("_rk_inspect_pending") == key:
+        del st.session_state["_rk_inspect_pending"]
+        if pick != "—":
+            st.session_state["_rk_inspect_reset"] = key
+            return pick
+    return None

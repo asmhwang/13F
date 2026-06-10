@@ -20,9 +20,9 @@ def _fund_row_html(r: pd.Series) -> str:
         f'<div><div class="rk-name">{_html.escape(str(r["fund_name"]))}{chip}</div>'
         f'<div class="rk-sub">{c.fmt_money(r.get("avg_aum"))} avg AUM</div></div>'
         f'<div><div class="rk-name">{score:.0f}</div>{c.score_bar_html(score)}</div>'
-        f'<div><div class="rk-sub">Positions</div><div>{int(r.get("avg_position_count") or 0)}</div></div>'
+        f'<div><div class="rk-sub">Positions</div><div>{round(r.get("avg_position_count") or 0)}</div></div>'
         f'<div><div class="rk-sub">Quarters</div><div>{int(r.get("quarters_of_data") or 0)}</div></div>'
-        f'<div><div class="rk-sub">Turnover</div><div>{c.fmt_pct(r.get("avg_turnover_rate"))}</div></div>'
+        f'<div><div class="rk-sub">Turnover</div><div>{c.fmt_pct(r.get("avg_turnover_rate"), signed=False)}</div></div>'
         f'<div><div class="rk-sub">TWS</div><div>{c.fmt_pct(r.get("tws_raw"))}</div></div>'
         '</div>'
     )
@@ -46,7 +46,7 @@ def _fund_detail(fund_id: str, fund_name: str) -> None:
         st.caption("No scoreable quarters yet.")
     to = data.load_fund_turnover(fund_id)
     if not to.empty:
-        st.caption(f"Avg turnover {c.fmt_pct(to.iloc[0]['avg_turnover_rate'])} · "
+        st.caption(f"Avg turnover {c.fmt_pct(to.iloc[0]['avg_turnover_rate'], signed=False)} · "
                    f"multiplier {to.iloc[0]['turnover_multiplier']:.2f} · "
                    f"{int(to.iloc[0]['quarter_pairs_measured'])} quarter pairs")
 
@@ -85,10 +85,13 @@ def render_fund_rankings() -> None:
         df, {"final_score": (score_rng[0], score_rng[1])},
         sort_col=sort_col, ascending=(sort_col == "rank"),
     )
+    if view.empty:
+        c.empty_card("No funds match the current score range.")
+        return
 
     c.ranking_list([_fund_row_html(r) for _, r in view.iterrows()])
 
     options = {f'{int(r["rank"])} · {r["fund_name"]}': r["fund_id"] for _, r in view.iterrows()}
-    pick = st.selectbox("Inspect a fund", ["—"] + list(options), key="fund_inspect")
-    if pick != "—":
+    pick = c.inspect_select("Inspect a fund", list(options), key="fund_inspect")
+    if pick is not None:
         _fund_detail(options[pick], pick.split(" · ", 1)[1])
