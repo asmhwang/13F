@@ -13,7 +13,7 @@ echo === %DATE% %TIME% === >> "%LOG%"
 
 echo [1/6] Ingesting latest filings...
 echo [1/6] Ingesting latest filings... >> "%LOG%"
-python -m pipeline.ingest --seed --latest-only 2>&1 | tee -a "%LOG%"
+python -m pipeline.ingest --seed --all-tracked --latest-only 2>&1 | tee -a "%LOG%"
 
 echo [2/6] Resolving new CUSIPs...
 echo [2/6] Resolving new CUSIPs... >> "%LOG%"

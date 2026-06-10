@@ -173,6 +173,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Ingest SEC 13F filings into SQLite")
     ap.add_argument("--cik",         help="Single filer CIK to ingest")
     ap.add_argument("--seed",        action="store_true", help="Ingest all seed filers")
+    ap.add_argument("--all-tracked", action="store_true",
+                    help="Ingest every filer already in the database "
+                         "(seed + dashboard-added)")
     ap.add_argument("--latest-only", action="store_true", help="Only ingest most recent filing per filer")
     ap.add_argument("--since",       help="Only ingest filings filed on/after this date (YYYY-MM-DD)")
     ap.add_argument("--force",       action="store_true", help="Re-ingest filings already in the database")
@@ -190,16 +193,23 @@ def main() -> None:
     if args.seed:
         filers_to_ingest.extend(cik for cik, _ in edgar.SEED_FILERS)
 
+    if args.all_tracked:
+        with closing(database.get_connection(db_path)) as conn:
+            filers_to_ingest.extend(
+                r[0] for r in conn.execute("SELECT cik FROM filers ORDER BY cik"))
+
     if not filers_to_ingest:
-        print("Specify --cik <CIK> or --seed. Run with -h for help.")
+        print("Specify --cik <CIK>, --seed, or --all-tracked. Run with -h for help.")
         sys.exit(1)
 
-    # Deduplicate while preserving order
+    # Deduplicate while preserving order (seed CIKs are zero-padded, DB CIKs
+    # are bare — normalize so the same filer isn't ingested twice)
     seen: set[str] = set()
     unique_filers = []
     for c in filers_to_ingest:
-        if c not in seen:
-            seen.add(c)
+        key = c.lstrip("0") or "0"
+        if key not in seen:
+            seen.add(key)
             unique_filers.append(c)
 
     for cik in unique_filers:

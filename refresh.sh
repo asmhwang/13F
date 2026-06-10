@@ -14,7 +14,7 @@ mkdir -p "$REPO_DIR/data"
 
 echo "=== $(date) ===" >> "$LOG"
 echo "[1/6] Ingesting latest filings..." | tee -a "$LOG"
-cd "$REPO_DIR" && $PYTHON -m pipeline.ingest --seed --latest-only 2>&1 | tee -a "$LOG"
+cd "$REPO_DIR" && $PYTHON -m pipeline.ingest --seed --all-tracked --latest-only 2>&1 | tee -a "$LOG"
 
 echo "[2/6] Resolving new CUSIPs..." | tee -a "$LOG"
 cd "$REPO_DIR" && $PYTHON -m pipeline.cusip 2>&1 | tee -a "$LOG"
