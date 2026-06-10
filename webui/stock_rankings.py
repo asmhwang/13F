@@ -62,7 +62,7 @@ def _stock_detail(ticker: str, row: pd.Series) -> None:
             weight=lambda d: d["weight"].map(
                 lambda w: "—" if pd.isna(w) else f"{w * 100:.1f}%"),
         )[["rank", "fund_name", "weight", "quarters_held"]]
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        st.dataframe(show, width="stretch", hide_index=True)
 
 
 def _render_tab(df: pd.DataFrame, kind: str) -> None:

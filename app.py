@@ -876,7 +876,7 @@ with st.sidebar:
     do_search = st.button(
         "Search EDGAR",
         disabled=len(search_query.strip()) < 3,
-        use_container_width=True,
+        width="stretch",
     )
 
     # Fire EDGAR search only on explicit button press
@@ -921,7 +921,7 @@ with st.sidebar:
     add_disabled = selected_new_filer is None or already_tracked or already_ingesting
     add_label = "Already tracked" if already_tracked else ("Ingesting..." if already_ingesting else "+ Add & Ingest Full History")
 
-    if st.button(add_label, disabled=add_disabled, use_container_width=True):
+    if st.button(add_label, disabled=add_disabled, width="stretch"):
         _start_ingest(selected_new_filer["cik"], selected_new_filer["name"])
         st.session_state["_clear_search"] = True
         st.rerun()
@@ -1007,7 +1007,7 @@ if view == "Single Filer":
             hovertemplate="<b>%{label}</b><br>$%{value:,.0f}K — %{percent}<extra></extra>",
         )
         fig.update_layout(showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     with col_right:
         shdr("Top Holdings by Value")
@@ -1021,7 +1021,7 @@ if view == "Single Filer":
         )
         fig2.update_layout(yaxis={"autorange": "reversed"}, coloraxis_showscale=False)
         fig2.update_traces(hovertemplate="<b>%{y}</b><br>$%{x:,.0f}K<extra></extra>")
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width="stretch")
 
     # QoQ changes
     if compare_period:
@@ -1076,7 +1076,7 @@ if view == "Single Filer":
             xaxis_title="Change in Value ($K)",
             yaxis={"autorange": "reversed"},
         )
-        st.plotly_chart(fig3, use_container_width=True)
+        st.plotly_chart(fig3, width="stretch")
 
         s = merged["status"].value_counts()
         chg_badges(
@@ -1105,7 +1105,7 @@ if view == "Single Filer":
             "weight_%":       "Weight %",
             "shares":         "Shares",
         }),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -1142,7 +1142,7 @@ elif view == "Conviction Scores":
                 "num_filers": "# Institutions", "avg_weight_pct": "Avg Weight %"},
     )
     fig_scores.update_layout(yaxis={"autorange": "reversed"}, coloraxis_showscale=False)
-    st.plotly_chart(fig_scores, use_container_width=True)
+    st.plotly_chart(fig_scores, width="stretch")
 
     st.divider()
     col_s1, col_s2 = st.columns([1, 1], gap="medium")
@@ -1160,7 +1160,7 @@ elif view == "Conviction Scores":
                     "num_filers": "# Institutions"},
         )
         fig_scatter.update_layout(coloraxis_showscale=False)
-        st.plotly_chart(fig_scatter, use_container_width=True)
+        st.plotly_chart(fig_scatter, width="stretch")
 
     with col_s2:
         shdr("Breadth vs. Concentration")
@@ -1176,7 +1176,7 @@ elif view == "Conviction Scores":
                     "conviction_score": "Score"},
         )
         fig_bv.update_layout(coloraxis_showscale=False)
-        st.plotly_chart(fig_bv, use_container_width=True)
+        st.plotly_chart(fig_bv, width="stretch")
 
     st.divider()
     shdr("Full Conviction Table", tag=f"{len(scores_df)} securities")
@@ -1195,7 +1195,7 @@ elif view == "Conviction Scores":
             "total_value_billions": "Total Value ($B)",
             "conviction_score":     "Conviction Score",
         }),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -1231,7 +1231,7 @@ elif view == "Cross-Filer Overview":
     )
     fig_aum.update_layout(coloraxis_showscale=False, xaxis_tickangle=-30)
     fig_aum.update_traces(hovertemplate="<b>%{x}</b><br>$%{y:.2f}B<extra></extra>")
-    st.plotly_chart(fig_aum, use_container_width=True)
+    st.plotly_chart(fig_aum, width="stretch")
 
     st.divider()
 
@@ -1254,7 +1254,7 @@ elif view == "Cross-Filer Overview":
             hover_data={"name_of_issuer": True},
         )
         fig_b.update_layout(yaxis={"autorange": "reversed"}, coloraxis_showscale=False)
-        st.plotly_chart(fig_b, use_container_width=True)
+        st.plotly_chart(fig_b, width="stretch")
 
     with col_b:
         shdr("Highest Aggregate Value", tag="by total AUM held")
@@ -1266,7 +1266,7 @@ elif view == "Cross-Filer Overview":
             hover_data={"name_of_issuer": True},
         )
         fig_v.update_layout(yaxis={"autorange": "reversed"}, coloraxis_showscale=False)
-        st.plotly_chart(fig_v, use_container_width=True)
+        st.plotly_chart(fig_v, width="stretch")
 
     st.divider()
     shdr("Overlap Heatmap", tag="top 15 securities × institutions")
@@ -1290,7 +1290,7 @@ elif view == "Cross-Filer Overview":
         xaxis_tickangle=-40,
         coloraxis_colorbar=dict(title="$K"),
     )
-    st.plotly_chart(fig_heat, use_container_width=True)
+    st.plotly_chart(fig_heat, width="stretch")
 
     st.divider()
     shdr("Aggregate Holdings Table", tag=f"{len(breadth)} securities")
@@ -1301,7 +1301,7 @@ elif view == "Cross-Filer Overview":
             "num_filers":     "# Institutions",
             "total_value":    "Aggregate Value ($K)",
         }),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 

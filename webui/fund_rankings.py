@@ -41,7 +41,7 @@ def _fund_detail(fund_id: str, fund_name: str) -> None:
                           yaxis_tickformat=".0%", paper_bgcolor="rgba(0,0,0,0)",
                           plot_bgcolor="rgba(0,0,0,0)")
         st.caption("Historical excess QPS (3yr forward, vs S&P 500 TR)")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
     else:
         st.caption("No scoreable quarters yet.")
     to = data.load_fund_turnover(fund_id)
