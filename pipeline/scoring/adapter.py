@@ -41,6 +41,54 @@ def latest_filing_id(conn: sqlite3.Connection, cik: str, period: str) -> int | N
     return row[0] if row else None
 
 
+def effective_filing_ids(conn: sqlite3.Connection, cik: str, period: str) -> list[int]:
+    """Filing ids that together represent this (cik, period)'s holdings:
+    the base filing plus any NEW HOLDINGS amendments (see
+    database.rebuild_effective_filings). Falls back to the latest filing when
+    effective_filings hasn't been built (e.g. minimal test fixtures)."""
+    try:
+        rows = conn.execute(
+            "SELECT filing_id FROM effective_filings "
+            "WHERE cik = ? AND period_of_report = ?",
+            (cik, period),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+    if rows:
+        return [r[0] for r in rows]
+    lf = latest_filing_id(conn, cik, period)
+    return [lf] if lf is not None else []
+
+
+def original_filed_date(conn: sqlite3.Connection, cik: str, period: str) -> str | None:
+    """First public disclosure date for a (cik, period): the original 13F-HR's
+    filed_date — NOT the latest amendment's, which can be years later and would
+    shift the forward-return window to the wrong era."""
+    try:
+        row = conn.execute(
+            "SELECT original_filed_date FROM effective_filings "
+            "WHERE cik = ? AND period_of_report = ? LIMIT 1",
+            (cik, period),
+        ).fetchone()
+        if row:
+            return row[0]
+    except sqlite3.OperationalError:
+        pass
+    row = conn.execute(
+        """
+        SELECT COALESCE(
+            (SELECT MIN(filed_date) FROM filings
+             WHERE cik = :cik AND period_of_report = :p
+               AND report_type NOT LIKE '%/A%'),
+            (SELECT MIN(filed_date) FROM filings
+             WHERE cik = :cik AND period_of_report = :p)
+        )
+        """,
+        {"cik": cik, "p": period},
+    ).fetchone()
+    return row[0] if row else None
+
+
 def price_asof(conn: sqlite3.Connection, ticker: str, on_date: str) -> tuple[str, float] | None:
     """Latest (date, adj_close) for `ticker` on or before `on_date`, or None."""
     row = conn.execute(

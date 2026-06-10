@@ -1,4 +1,5 @@
 """Tests for the webui data layer (pure SQL->DataFrame query functions)."""
+from pipeline import database
 from pipeline.database import get_connection, init_db
 from pipeline.scoring import adapter
 from webui import data
@@ -102,6 +103,7 @@ def test_stock_holders_weight_and_quarters(tmp_path):
     _hold(conn, f1, "C1", 250); _hold(conn, f1, "C2", 750)   # AAA = 25% of fund
     _hold(conn, f2, "C1", 250); _hold(conn, f2, "C2", 750)
     conn.commit()
+    database.rebuild_effective_filings(conn)
     df = data.stock_holders("AAA", conn)
     assert list(df["fund_name"]) == ["Alpha Fund"]
     assert abs(df.iloc[0]["weight"] - 0.25) < 1e-6

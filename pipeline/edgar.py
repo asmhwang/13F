@@ -266,6 +266,57 @@ def fetch_document(url: str) -> str:
     return _get_text(url)  # immutable — cache forever
 
 
+_AMENDMENT_TYPE_RE = re.compile(
+    r"<(?:\w+:)?amendmentType>\s*([A-Z ]+?)\s*</", re.IGNORECASE)
+
+
+def parse_amendment_type(text: str) -> str | None:
+    """Extract a normalized 13F amendment type ('RESTATEMENT' or
+    'NEW HOLDINGS') from a primary-doc XML / legacy submission text."""
+    m = _AMENDMENT_TYPE_RE.search(text)
+    if m:
+        val = m.group(1).strip().upper()
+        if val in ("RESTATEMENT", "NEW HOLDINGS"):
+            return val
+    # Legacy text cover pages spell it out in prose / checkboxes.
+    head = text[:5000].upper()
+    if "RESTATEMENT" in head:
+        return "RESTATEMENT"
+    if "NEW HOLDINGS" in head:
+        return "NEW HOLDINGS"
+    return None
+
+
+def get_amendment_type(cik: str, accession_number: str) -> str | None:
+    """Amendment type for a 13F-HR/A filing, read from its primary document
+    (cover page <amendmentInfo><amendmentType>). Returns None when it cannot
+    be determined (legacy filings without a parsable cover page)."""
+    acc_clean = accession_number.replace("-", "")
+    base_url = f"{_BASE}/Archives/edgar/data/{cik.lstrip('0')}/{acc_clean}"
+    try:
+        index = get_filing_index(cik, accession_number)
+    except Exception:
+        return None
+    items = index.get("directory", {}).get("item", [])
+    # The primary doc (cover page) is any XML that isn't the information table.
+    candidates = [
+        item["name"] for item in items
+        if item.get("name", "").endswith(".xml")
+        and "informationtable" not in item.get("name", "").lower()
+    ]
+    # Prefer files named like the primary doc.
+    candidates.sort(key=lambda n: ("primary" not in n.lower(), n))
+    for name in candidates:
+        try:
+            text = fetch_document(f"{base_url}/{name}")
+        except Exception:
+            continue
+        atype = parse_amendment_type(text)
+        if atype:
+            return atype
+    return None
+
+
 def prefetch_filing_indexes(
     cik: str,
     filings: list[dict[str, Any]],

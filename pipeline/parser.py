@@ -30,7 +30,10 @@ def detect_value_divisor(holdings: list[dict[str, Any]]) -> int:
     implied = [
         h["value_thousands"] / h["shares"]
         for h in holdings
-        if h.get("shares") and h.get("value_thousands")
+        # Skip options: their value is the option's market value but shares is
+        # the underlying count, so cheap puts/calls (<$1/share premium) would
+        # drag a dollars-unit filing's median below 1.0 and flip the divisor.
+        if h.get("shares") and h.get("value_thousands") and not h.get("put_call")
     ]
     if not implied:
         return 1
@@ -175,15 +178,23 @@ def parse_information_table(xml_text: str) -> list[dict[str, Any]]:
 # Matches any line that contains a solid 9-char CUSIP followed by numeric data.
 # Group 1 = text before CUSIP, Group 2 = CUSIP, Group 3 = value, Group 4 = shares/prn
 # re.MULTILINE so ^ matches per-line when used with .search() on a block.
+#
+# The CUSIP group must contain >= 3 digits and end with a digit (the check
+# digit). Without that, all-letter 9-char class tokens like "SPONSORED",
+# "ADRREPORD", "DLJDIRECT" match first (the prefix is lazy), shifting the real
+# numeric CUSIP into the value column — one such misparse stored a $832B
+# position. Real CUSIPs (and CINS, e.g. G0177J108) always satisfy this shape.
+_CUSIP9 = r"(?=(?:[A-Z]*\d){3})[A-Z0-9]{8}\d"
 _DATA_LINE_RE = re.compile(
-    r"^(.*?)\s+([A-Z0-9]{9})\s+([\d,]+)\s+([\d,]+|-)",
+    rf"^(.*?)\s+({_CUSIP9})\s+([\d,]+)\s+([\d,]+|-)",
     re.MULTILINE,
 )
 
 # Format C (pre-2012): CUSIP printed with spaces, e.g. "025816 10 9"
 # Group 1 = text before CUSIP, Group 2 = full spaced CUSIP, Group 3 = value, Group 4 = shares
+# Same digit constraint: >= 3 digits in the issuer segment, check digit at end.
 _DATA_LINE_C_RE = re.compile(
-    r"^(.*?)\s+([A-Z0-9]{6}\s[A-Z0-9]{2}\s[A-Z0-9])\s+([\d,]+)\s+([\d,]+|-)",
+    r"^(.*?)\s+((?=(?:[A-Z]*\d){3})[A-Z0-9]{6}\s[A-Z0-9]{2}\s\d)\s+([\d,]+)\s+([\d,]+|-)",
     re.MULTILINE,
 )
 

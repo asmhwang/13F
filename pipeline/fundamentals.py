@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-from pipeline.database import DB_PATH, get_connection
+from pipeline.database import DB_PATH, ensure_effective_filings, get_connection
 from pipeline.scoring import adapter
 
 _FINNHUB_BASE = "https://finnhub.io/api/v1"
@@ -63,11 +63,16 @@ def _millions(v) -> float | None:
 
 
 def fetch_profile(ticker: str) -> dict:
-    """{sector, market_cap, shares_out} from Finnhub /stock/profile2."""
+    """{sector, market_cap, shares_out} from Finnhub /stock/profile2.
+
+    Market cap is dropped for non-USD profiles: Finnhub reports some ADRs in
+    the home-listing currency (e.g. TSM in TWD), which would inflate the value
+    ~30x and corrupt the small/mid-cap filtered gate."""
     data = _finnhub_get("/stock/profile2", {"symbol": ticker})
+    currency = (data.get("currency") or "USD").upper()
     return {
         "sector": data.get("finnhubIndustry") or None,
-        "market_cap": _millions(data.get("marketCapitalization")),
+        "market_cap": _millions(data.get("marketCapitalization")) if currency == "USD" else None,
         "shares_out": _millions(data.get("shareOutstanding")),
     }
 
@@ -102,12 +107,9 @@ def universe_tickers(conn: sqlite3.Connection) -> list[str]:
         """
         WITH ranked AS (SELECT fund_id FROM fund_rankings),
         latest AS (
-            SELECT f.id, f.cik FROM filings f
-            JOIN ranked r ON r.fund_id = f.cik
-            WHERE f.period_of_report = :cq
-              AND f.id = (SELECT f2.id FROM filings f2
-                          WHERE f2.cik = f.cik AND f2.period_of_report = :cq
-                          ORDER BY f2.filed_date DESC, f2.id DESC LIMIT 1)
+            SELECT ef.filing_id AS id, ef.cik FROM effective_filings ef
+            JOIN ranked r ON r.fund_id = ef.cik
+            WHERE ef.period_of_report = :cq
         )
         SELECT DISTINCT s.ticker
         FROM holdings h
@@ -135,6 +137,7 @@ def ingest_fundamentals(db_path: Path = DB_PATH, limit: int | None = None) -> di
     conn = get_connection(db_path)
     try:
         adapter.init_schema(conn, db_path)
+        ensure_effective_filings(conn)
         cq = adapter.current_quarter_date(conn)
         tickers = universe_tickers(conn)
         if limit is not None:

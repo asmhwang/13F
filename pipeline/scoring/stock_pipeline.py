@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from pipeline.database import DB_PATH, get_connection
+from pipeline.database import DB_PATH, ensure_effective_filings, get_connection
 from pipeline.scoring import adapter
 
 _MIN_TRAIN_ROWS = 8          # below this, skip the fit and fall back to fund_conviction
@@ -63,20 +63,21 @@ def qualifying_funds(conn: sqlite3.Connection) -> dict[str, float]:
 
 
 def _equity_holdings(conn: sqlite3.Connection, cik: str, period: str) -> dict[str, float]:
-    """{ticker: position_value_usd} for the latest filing of cik at period
-    (equity, resolved tickers only)."""
-    lf = adapter.latest_filing_id(conn, cik, period)
-    if lf is None:
+    """{ticker: position_value_usd} for the effective filing set of cik at
+    period (equity, resolved tickers only)."""
+    ids = adapter.effective_filing_ids(conn, cik, period)
+    if not ids:
         return {}
     rows = conn.execute(
-        """
+        f"""
         SELECT s.ticker AS ticker, SUM(h.value_thousands) * 1000.0 AS v
         FROM holdings h JOIN securities s ON s.cusip = h.cusip
-        WHERE h.filing_id = ? AND s.ticker IS NOT NULL AND s.ticker <> ''
+        WHERE h.filing_id IN ({",".join("?" * len(ids))})
+          AND s.ticker IS NOT NULL AND s.ticker <> ''
           AND s.ticker NOT GLOB '*[0-9]*'
           AND (h.put_call IS NULL OR h.put_call = '') AND h.value_thousands > 0
         GROUP BY s.ticker
-        """, (lf,)).fetchall()
+        """, ids).fetchall()
     return {r["ticker"]: r["v"] for r in rows}
 
 
@@ -151,10 +152,14 @@ def signals_for_period(conn: sqlite3.Connection, period: str,
         avg_relative_size = sum(weights) / len(weights)
         tenures = [_tenure(periods_desc[cik], hist[cik], ticker, period) for cik in holders]
         avg_tenure = sum(tenures) / len(tenures)
-        # net change across ALL qualifying funds (a fund that exited still counts)
+        # net change across ALL qualifying funds (a fund that exited still
+        # counts). Funds with no filing at this period are skipped — otherwise
+        # their whole book reads as a spurious liquidation in training periods.
         net_change = 0.0
         buyers = sellers = 0
         for cik in qualifying:
+            if period not in hist[cik]:
+                continue
             now = cur[cik].get(ticker, 0.0)
             was = prior[cik].get(ticker, 0.0)
             delta = now - was
@@ -252,12 +257,21 @@ def build_training_set(conn: sqlite3.Connection, qualifying: dict[str, float],
     """
     Assemble (feature_names, X, y) from historical (stock, quarter) observations
     that have a non-null 3yr return. Features: holder_count, fund_conviction,
-    avg_relative_size, 52wk_range_position (0.5 if NULL), + one-hot sector.
+    avg_relative_size, 52wk_range_position (0.5 if NULL).
     Target: mean 3yr_return across qualifying holders of that (stock, quarter).
+
+    Sector is handled by the post-fit sector_adjust demeaning, NOT by one-hot
+    dummies here: intercept + a complete one-hot set is rank-deficient (the
+    lstsq min-norm solution hides it but the coefficients are arbitrary), and
+    combining dummies with sector_adjust would adjust for sector twice.
+
+    Known limitation (documented, deferred): qualifying-fund selection and the
+    fund_conviction feature are built from final_score, which itself was fit on
+    full-history forward returns — a point-in-time score per training period
+    would be needed to fully remove that circularity.
     """
-    sector_names = sorted(set(sector.values()))
     feature_names = ["holder_count", "fund_conviction", "avg_relative_size",
-                     "range_position"] + [f"sector_{s}" for s in sector_names]
+                     "range_position"]
     # target: mean return per (ticker, quarter) among qualifying funds only
     qs = ",".join("?" * len(qualifying))
     rows = conn.execute(
@@ -281,10 +295,8 @@ def build_training_set(conn: sqlite3.Connection, qualifying: dict[str, float],
                 continue
             rp, _ = range_position_52w(conn, ticker, period)
             rp = 0.5 if rp is None else rp
-            base = [float(sig[ticker]["holder_count"]), sig[ticker]["fund_conviction"],
-                    sig[ticker]["avg_relative_size"], rp]
-            onehot = [1.0 if sector.get(ticker, "Unknown") == s else 0.0 for s in sector_names]
-            X.append(base + onehot)
+            X.append([float(sig[ticker]["holder_count"]), sig[ticker]["fund_conviction"],
+                      sig[ticker]["avg_relative_size"], rp])
             y.append(ret)
     return feature_names, X, y
 
@@ -354,17 +366,20 @@ def _current_company_names(conn: sqlite3.Connection, tickers: list[str]) -> dict
 
 def _data_quality_for(conn: sqlite3.Connection, ticker: str, period: str,
                       qualifying: dict[str, float]) -> float:
-    """Fraction of current-quarter holding_returns rows for this ticker (across
-    qualifying funds) flagged 'clean'."""
-    qs = ",".join("?" * len(qualifying))
-    rows = conn.execute(
-        f"SELECT data_quality_flag FROM holding_returns "
-        f"WHERE ticker = ? AND quarter_date = ? AND fund_id IN ({qs})",
-        (ticker, period, *qualifying.keys())).fetchall()
-    if not rows:
+    """Price-freshness quality for the current quarter, 0-1.
+
+    holding_returns has no rows at the current quarter (its 3yr window hasn't
+    elapsed), so quality is measured directly: how recent is the ticker's last
+    price on/before the quarter date. <=7 days -> 1.0 (actively trading),
+    <=30 days -> 0.5 (stale), else/missing -> 0.0 (delisted or no data)."""
+    row = conn.execute(
+        "SELECT MAX(date) FROM prices WHERE ticker = ? AND date <= ? "
+        "AND adj_close IS NOT NULL", (ticker, period)).fetchone()
+    if not row or row[0] is None:
         return 0.0
-    clean = sum(1 for r in rows if r["data_quality_flag"] == "clean")
-    return clean / len(rows)
+    gap = conn.execute(
+        "SELECT julianday(?) - julianday(?)", (period, row[0])).fetchone()[0]
+    return 1.0 if gap <= 7 else (0.5 if gap <= 30 else 0.0)
 
 
 def _truncate(conn: sqlite3.Connection) -> None:
@@ -379,6 +394,7 @@ def run_stock_pipeline(db_path: Path = DB_PATH) -> dict:
     conn = get_connection(db_path)
     try:
         adapter.init_schema(conn, db_path)
+        ensure_effective_filings(conn)
         _truncate(conn)
         cq = adapter.current_quarter_date(conn)
         qualifying = qualifying_funds(conn)
@@ -403,17 +419,15 @@ def run_stock_pipeline(db_path: Path = DB_PATH) -> dict:
                 (t, cq, s["fund_conviction"], s["holder_count"], s["net_change_pct"],
                  s["avg_relative_size"], s["avg_tenure"]))
 
-        # regression (with fund_conviction fallback)
+        # regression (with fund_conviction fallback); sector handled post-fit
+        # by sector_adjust, not by dummies (see build_training_set docstring)
         feature_names, X, y = build_training_set(conn, qualifying, hist, sector)
-        sector_names = [f.removeprefix("sector_") for f in feature_names if f.startswith("sector_")]
         pred_rows = {}
         for t in universe:
             rp, _ = range_position_52w(conn, t, cq)
             rp = 0.5 if rp is None else rp
-            base = [float(sig[t]["holder_count"]), sig[t]["fund_conviction"],
-                    sig[t]["avg_relative_size"], rp]
-            onehot = [1.0 if sector[t] == s else 0.0 for s in sector_names]
-            pred_rows[t] = base + onehot
+            pred_rows[t] = [float(sig[t]["holder_count"]), sig[t]["fund_conviction"],
+                            sig[t]["avg_relative_size"], rp]
         fallback = {t: sig[t]["fund_conviction"] for t in universe}
         raw_scores = regress_scores(feature_names, X, y, pred_rows, fallback=fallback)
         adj_scores = sector_adjust(raw_scores, sector)
@@ -421,15 +435,18 @@ def run_stock_pipeline(db_path: Path = DB_PATH) -> dict:
         # confidence components
         comp = {}
         for t in universe:
-            holders = sig[t]["holder_count"]
             whs = sum(qualifying[c] for c in qualifying
                       if t in hist[c].get(cq, {}))
+            # Agreement among funds that actually traded the name. Dividing by
+            # holder_count could exceed 1.0 (exited funds count as sellers but
+            # not as holders), breaking compute_confidence's 0-1 assumption.
+            traded = sig[t]["buyers"] + sig[t]["sellers"]
             comp[t] = {
                 "weighted_holder_score": whs,
                 "avg_tenure_score": sig[t]["avg_tenure"],
                 "avg_relative_size": sig[t]["avg_relative_size"],
-                "direction_agreement": (abs(sig[t]["buyers"] - sig[t]["sellers"]) / holders
-                                        if holders else 0.0),
+                "direction_agreement": (abs(sig[t]["buyers"] - sig[t]["sellers"]) / traded
+                                        if traded else 0.0),
                 "data_quality_score": _data_quality_for(conn, t, cq, qualifying),
             }
         conf = compute_confidence(comp)

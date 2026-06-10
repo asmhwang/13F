@@ -20,9 +20,9 @@ def _stock_row_html(r: pd.Series) -> str:
     nc_color = c.net_change_color(nc)
     arrow = "▲" if (nc or 0) > 0 else ("▼" if (nc or 0) < 0 else "·")
     score = r.get("sector_adjusted_score")
-    score_txt = "—" if score is None else f"{score:.2f}"
+    score_txt = "—" if score is None or pd.isna(score) else f"{score:.2f}"
     tenure = r.get("avg_tenure")
-    tenure_txt = "—" if tenure is None else f"{float(tenure):.1f}q"
+    tenure_txt = "—" if tenure is None or pd.isna(tenure) else f"{float(tenure):.1f}q"
     return (
         '<div class="rk-row" style="grid-template-columns:44px 1.4fr 2fr 1.2fr 1fr 1fr 1.1fr 1fr">'
         f'<div class="rk-rank">{int(r["rank"])}</div>'
@@ -45,27 +45,31 @@ def _stock_detail(ticker: str, row: pd.Series) -> None:
     st.subheader(ticker)
     cols = st.columns(4)
     cols[0].metric("Market cap", c.fmt_money(row.get("market_cap")))
-    cols[1].metric("P/E", "—" if not row.get("pe_available") else f'{float(row.get("pe_ratio") or 0):.1f}')
+    pe_av, pe = row.get("pe_available"), row.get("pe_ratio")
+    pe_ok = pe_av is not None and not pd.isna(pe_av) and bool(pe_av) and not pd.isna(pe)
+    cols[1].metric("P/E", f"{float(pe):.1f}" if pe_ok else "—")
     rp = row.get("range_position")
-    cols[2].metric("52wk range", "—" if rp is None else f"{float(rp) * 100:.0f}%")
+    cols[2].metric("52wk range", "—" if rp is None or pd.isna(rp) else f"{float(rp) * 100:.0f}%")
+    # Finnhub grossMarginTTM is already in percent units (e.g. 32.4) — no ×100.
     gm = row.get("gross_margin_pct")
-    cols[3].metric("Gross margin", "—" if gm is None else f"{float(gm) * 100:.0f}%")
+    cols[3].metric("Gross margin", "—" if gm is None or pd.isna(gm) else f"{float(gm):.0f}%")
     st.markdown("**Held by qualifying funds**")
     holders = data.load_stock_holders(ticker)
     if holders.empty:
         st.caption("No qualifying-fund holdings recorded.")
     else:
         show = holders.assign(
-            weight=lambda d: (d["weight"] * 100).round(1).astype(str) + "%",
+            weight=lambda d: d["weight"].map(
+                lambda w: "—" if pd.isna(w) else f"{w * 100:.1f}%"),
         )[["rank", "fund_name", "weight", "quarters_held"]]
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        st.dataframe(show, width="stretch", hide_index=True)
 
 
 def _render_tab(df: pd.DataFrame, kind: str) -> None:
     if df.empty:
         if kind == "filtered":
             c.empty_card("No stocks meet the filtered criteria yet "
-                         "(needs ≥3 holders + $300M–$4B market cap + populated fundamentals). "
+                         "(needs a top-fund holder + $300M–$4B market cap + populated fundamentals). "
                          "See the Raw tab.")
         else:
             c.empty_card("No ranked stocks yet. Run the stock pipeline after the fund pipeline.")
@@ -90,8 +94,8 @@ def _render_tab(df: pd.DataFrame, kind: str) -> None:
     c.ranking_list([_stock_row_html(r) for _, r in view.iterrows()])
 
     options = {f'{int(r["rank"])} · {r["ticker"]}': i for i, (_, r) in enumerate(view.iterrows())}
-    pick = st.selectbox("Inspect a stock", ["—"] + list(options), key=f"{kind}_inspect")
-    if pick != "—":
+    pick = c.inspect_select("Inspect a stock", list(options), key=f"{kind}_inspect")
+    if pick is not None:
         row = view.iloc[options[pick]]
         _stock_detail(row["ticker"], row)
 

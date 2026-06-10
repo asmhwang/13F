@@ -114,7 +114,7 @@ Filings already in the database are skipped automatically. HTTP responses are ca
 
 **Adding filers from the dashboard:** Use the "Add New Filer" search box in the sidebar to find and add any of the ~6,000 EDGAR 13F filers by name. Full filing history is ingested in the background — the UI stays responsive and updates automatically when complete.
 
-> **Note on amendments:** When a filer files a 13F-HR/A amendment, only the most recently filed version for that period is used. All queries automatically deduplicate amendments.
+> **Note on amendments:** 13F-HR/A amendments come in two SEC kinds and are resolved by type: a **RESTATEMENT** replaces the original information table; a **NEW HOLDINGS** amendment (e.g. positions revealed after confidential treatment expires) is *unioned* with it. Tiny amendments labeled RESTATEMENT (<50% of the original's positions) are treated as additive — pre-2013 confidential-treatment releases were habitually mislabeled. The resolution lives in the `effective_filings` table (`pipeline/database.py:rebuild_effective_filings`), rebuilt automatically after every ingest, and all queries read from it.
 
 > **Note on SEC unit change:** Around the 2022-12-31 reporting period the SEC moved the `<value>` field in 13F filings from thousands of dollars toward whole dollars — but adoption is uneven (large filers like Berkshire switched; others such as Baupost, T. Rowe Price, and Tieton still report in thousands). A blanket period-based rule corrupts the stragglers by 1000×, so the pipeline detects the unit **per filing** from the median implied price per share (value ÷ shares) and normalizes each filing to thousands accordingly (`pipeline/parser.py:detect_value_divisor`).
 

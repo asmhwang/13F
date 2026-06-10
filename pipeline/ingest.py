@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import sys
+from contextlib import closing
 from pathlib import Path
 
 # Allow running as `python pipeline/ingest.py` from repo root
@@ -55,7 +56,7 @@ def ingest_filer(
     filer_name = submissions.get("name", "Unknown")
     print(f"  Filer: {filer_name}")
 
-    with database.get_connection(db_path) as conn:
+    with closing(database.get_connection(db_path)) as conn, conn:
         database.upsert_filer(conn, cik.lstrip("0") or "0", filer_name)
 
     # ---- filing list ----
@@ -78,7 +79,7 @@ def ingest_filer(
 
     # Skip filings already in the DB (unless --force)
     if not force:
-        with database.get_connection(db_path) as conn:
+        with closing(database.get_connection(db_path)) as conn:
             filings = [f for f in filings if not _already_ingested(conn, f["accession_number"])]
         if not filings:
             print("  All filings already ingested. Use --force to re-ingest.")
@@ -134,8 +135,18 @@ def ingest_filer(
 
         print(f"    Parsed {len(holdings)} holdings")
 
+        # Amendments: RESTATEMENT replaces the original information table;
+        # NEW HOLDINGS only adds positions. Read the type from the cover page
+        # (or the document itself for legacy text filings) so query-time
+        # resolution (effective_filings) can union instead of replace.
+        amendment_type = None
+        if "/A" in rtype:
+            amendment_type = (edgar.get_amendment_type(cik_bare, acc)
+                              or edgar.parse_amendment_type(xml_text))
+            print(f"    Amendment type: {amendment_type or 'unknown'}")
+
         # Persist
-        with database.get_connection(db_path) as conn:
+        with closing(database.get_connection(db_path)) as conn, conn:
             filing_id = database.insert_filing(
                 conn,
                 cik=cik_bare,
@@ -144,6 +155,7 @@ def ingest_filer(
                 filed_date=filed,
                 report_type=rtype,
                 raw_url=xml_url,
+                amendment_type=amendment_type,
             )
             conn.execute("DELETE FROM holdings WHERE filing_id = ?", (filing_id,))
             database.insert_holdings(conn, filing_id, holdings)
@@ -151,11 +163,19 @@ def ingest_filer(
         total_value = sum(h["value_thousands"] for h in holdings)
         print(f"    Stored filing_id={filing_id}  AUM≈${total_value/1_000:,.0f}M")
 
+    # Resolve which filings represent each (cik, period) now that amendments
+    # and their types are stored.
+    with closing(database.get_connection(db_path)) as conn:
+        database.rebuild_effective_filings(conn, cik=cik_bare)
+
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Ingest SEC 13F filings into SQLite")
     ap.add_argument("--cik",         help="Single filer CIK to ingest")
     ap.add_argument("--seed",        action="store_true", help="Ingest all seed filers")
+    ap.add_argument("--all-tracked", action="store_true",
+                    help="Ingest every filer already in the database "
+                         "(seed + dashboard-added)")
     ap.add_argument("--latest-only", action="store_true", help="Only ingest most recent filing per filer")
     ap.add_argument("--since",       help="Only ingest filings filed on/after this date (YYYY-MM-DD)")
     ap.add_argument("--force",       action="store_true", help="Re-ingest filings already in the database")
@@ -173,16 +193,23 @@ def main() -> None:
     if args.seed:
         filers_to_ingest.extend(cik for cik, _ in edgar.SEED_FILERS)
 
+    if args.all_tracked:
+        with closing(database.get_connection(db_path)) as conn:
+            filers_to_ingest.extend(
+                r[0] for r in conn.execute("SELECT cik FROM filers ORDER BY cik"))
+
     if not filers_to_ingest:
-        print("Specify --cik <CIK> or --seed. Run with -h for help.")
+        print("Specify --cik <CIK>, --seed, or --all-tracked. Run with -h for help.")
         sys.exit(1)
 
-    # Deduplicate while preserving order
+    # Deduplicate while preserving order (seed CIKs are zero-padded, DB CIKs
+    # are bare — normalize so the same filer isn't ingested twice)
     seen: set[str] = set()
     unique_filers = []
     for c in filers_to_ingest:
-        if c not in seen:
-            seen.add(c)
+        key = c.lstrip("0") or "0"
+        if key not in seen:
+            seen.add(key)
             unique_filers.append(c)
 
     for cik in unique_filers:
