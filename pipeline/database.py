@@ -131,6 +131,12 @@ def rebuild_effective_filings(conn: sqlite3.Connection, cik: str | None = None) 
     Amendments without a parsed amendment_type (legacy text filings) are
     classified by size: an /A carrying >= 50% of the largest earlier filing's
     holdings is treated as a restatement, smaller ones as additive.
+
+    The size check also OVERRIDES a RESTATEMENT label on tiny amendments:
+    pre-XML confidential-treatment releases were filed as "restatements" but
+    contain only the previously-omitted positions (e.g. Berkshire 2003-12-31:
+    32-holding original, 1-holding /A labeled RESTATEMENT). Trusting the label
+    there would wipe the quarter. A NEW HOLDINGS label is always additive.
     """
     _migrate(conn)
     if cik is not None:
@@ -168,11 +174,14 @@ def rebuild_effective_filings(conn: sqlite3.Connection, cik: str | None = None) 
         for i, f in enumerate(filings):
             is_amendment = "/A" in f["report_type"]
             atype = (f["amendment_type"] or "").upper()
-            if not is_amendment or atype == "RESTATEMENT":
+            if not is_amendment:
                 kind = "base"
             elif atype == "NEW HOLDINGS":
                 kind = "add"
-            else:  # unknown legacy /A — classify by relative size
+            else:
+                # RESTATEMENT or unknown: replace only when plausibly a full
+                # information table (>= 50% of the largest filing seen so far).
+                # Tiny "restatements" are confidential-treatment releases.
                 kind = "base" if (max_seen == 0 or f["n_holdings"] >= 0.5 * max_seen) else "add"
             if kind == "base":
                 base_idx = i

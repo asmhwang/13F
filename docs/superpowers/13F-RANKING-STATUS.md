@@ -1,12 +1,12 @@
 # 13F Ranking Feature — Build Status & Resume Guide
 
-**Last updated:** 2026-06-09
-**Branch:** P1–P4 on `feat/13f-ranking`, P5 on `feat/13f-website` — both merged to `main`. Unit-bug fix + filer expansion (2026-06-09) committed on `fix/13f-value-units-and-filer-expansion` (`86e6929`), branched off `main`, **not yet merged or pushed**.
+**Last updated:** 2026-06-10
+**Branch:** everything through the 2026-06-09 unit fix is merged to `main`. The 2026-06-10 full-package review fixes are on `fix/13f-review-round2`, merged to `main`.
 **Resume anchor:** this file. Read it first after clearing chat.
 
 This feature turns ingested 13F filings into two ranked outputs — **Fund Rankings** (which small, concentrated funds pick well long-term) and **Stock Rankings** (which stocks those funds are most convicted on) — both as raw + filtered views, shown on the Streamlit site.
 
-**Status in one line: DONE and live. Backend (P1–P4) + website (P5) complete; a critical 13F unit-of-value bug was found and fixed; 24 small/mid filers ingested → 9 funds now rank (was 1), 135 raw + 9 filtered stocks. 71 tests pass.**
+**Status in one line: DONE and live. After the 2026-06-10 review round (amendment-resolution overhaul + legacy-parser fix + scoring/webui corrections, all data re-ingested + recomputed): 9 funds rank, 135 raw + 8 filtered stocks, 78 tests pass.**
 
 Source specs: `docs/superpowers/specs/2026-06-07-13f-ranking-design.md`, `docs/superpowers/specs/2026-06-07-13f-rankings-website-design.md`
 Per-phase plans: `docs/superpowers/plans/2026-06-07-13f-*.md`
@@ -88,6 +88,37 @@ Eligible after broadening (9 ranked): Dalal Street/Pabrai (#1, score 100), Tieto
 
 ---
 
+## Review round 2 (2026-06-10) — full-package audit + fixes ✅
+
+Three parallel review agents audited scoring, webui, and ingest against the live DB. All confirmed bugs fixed on `fix/13f-review-round2`; all 4,416 filings force re-ingested; rankings recomputed.
+
+### Critical fixes
+1. **Amendment resolution overhaul** — the old "latest filing per (cik, period) wins" dedup treated every 13F-HR/A as a full replacement. SEC **NEW HOLDINGS** amendments contain *only added* positions (confidential-treatment releases), so 212 quarters collapsed — e.g. Berkshire 2025-03-31 resolved to a 4-holding $1.1B /A instead of the 110-holding $258.7B original. Now: `filings.amendment_type` parsed from the /A cover page; new `effective_filings` table per (cik, period) = base filing (latest original/RESTATEMENT) + NEW HOLDINGS /As; tiny "RESTATEMENT"-labeled /As (<50% of the largest filing) are treated as additive — pre-XML confidential releases were mislabeled restatements (Berkshire 2003: 32-holding HR + 1-holding "RESTATEMENT"). All consumers (queries.py, adapter, prices, fundamentals, webui/data, app.py) read `effective_filings`. `database.rebuild_effective_filings()` runs per-filer after ingest; `ensure_effective_filings()` guards old DBs.
+2. **Return-window as-of = original filed_date** — a /A filed years later was shifting the 3yr forward window (fund 1419999's 2008-Q4 "score" measured 2012–2015). `effective_filings.original_filed_date` anchors it at first public disclosure.
+3. **Legacy parser CUSIP regex** — all-letter 9-char class tokens (`SPONSORED`, `ADRREPORD`) matched as CUSIPs, shifting the numeric CUSIP into the value column (one $832B position; D.E. Shaw 2000-06-30 showed $1.09T AUM, real ≈ $2.5B). CUSIP group now requires ≥3 digits + trailing check digit.
+4. **Webui**: gross margin double-×100 ("3242%"), st.dialog crash when inspecting in both tabs + dialog re-opening forever after dismissal (new `components.inspect_select`), NaN→"nan%" guards, `use_container_width`→`width="stretch"`.
+
+### Scoring/method fixes
+- Turnover multiplier now penalizes |tws| (plain product *rewarded* negative-TWS high-turnover funds).
+- Multi-CUSIP→same-ticker positions sum instead of clobbering; $200M weed gate aggregates per CUSIP (SOLE/SHARED splits).
+- λ-decay by calendar quarter distance, not list index.
+- Stock regression: sector one-hot dummies removed (rank-deficient + double-adjusted vs `sector_adjust`); `direction_agreement` denominator = buyers+sellers (was holder_count, could exceed 1); training signals skip funds that didn't file that period; `data_quality_score` = price freshness at cq (was uniformly 0.0/dead).
+- detect_value_divisor skips options rows (cheap puts could flip a filing's unit detection).
+- conviction_scores: per-filer prior period (absent filers no longer read as all-new buys); position_changes adds `unchanged`.
+
+### Ops fixes
+- prices fetch-log records the *requested* window (2,909 tickers were refetched in full every run); 404 → permanent `no_data` (2,171 tickers retried forever); errors no longer wipe coverage; null-adjclose rows skipped rather than splicing unadjusted bars.
+- Finnhub market cap dropped when profile currency ≠ USD (TSM showed $59.5T — TWD).
+- `pipeline.ingest --all-tracked` + refresh scripts use it, so dashboard-added filers keep refreshing.
+
+### Post-recompute reality (2026-06-10)
+- 9 ranked funds (same set; order stable, Dalal Street #1 score 100). Giverny's phantom liquidation churn gone (turnover 0.052, avg AUM $1.44B).
+- 135 raw / **8 filtered** stocks (VPG dropped out on recompute — legit).
+- Berkshire 2025-03-31 = $259.8B over 39 cusips (HR ∪ NEW-HOLDINGS /A). 0 quarters with effective set < 50% of the largest filing.
+- **Known deferred limitation (documented in code):** the stock regression's qualifying-fund selection + fund_conviction feature derive from `final_score`, itself fit on full-history forward returns — fully removing this circularity needs point-in-time fund scores (with P3b).
+
+---
+
 ## What we SKIPPED / DEFERRED (intentional, documented)
 
 | Item | Why deferred | When needed |
@@ -134,4 +165,4 @@ Eligible after broadening (9 ranked): Dalal Street/Pabrai (#1, score 100), Tieto
    - Alternative with no new filers: lower the filtered `holder_count ≥ 3` knob in `pipeline/scoring/stock_pipeline.py` to surface a filtered list against Baupost alone.
 5. Memory: a MemPalace `13F-platform` wing (rooms `decisions`, `backend`) has per-phase + P5 + backfill drawers with full detail.
 
-**Test everything still green:** `python3 -m pytest -q` → expect **65 passed**.
+**Test everything still green:** `python3 -m pytest -q` → expect **78 passed**.

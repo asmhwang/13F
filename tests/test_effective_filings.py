@@ -58,6 +58,18 @@ def test_unknown_amendment_classified_by_size(tmp_path):
     assert adapter.effective_filing_ids(conn, "2", "2024-12-31") == [full]
 
 
+def test_tiny_labeled_restatement_treated_as_additive(tmp_path):
+    """Pre-XML confidential-treatment releases are labeled RESTATEMENT but
+    contain only the previously-omitted positions — they must union, not wipe
+    the quarter (e.g. Berkshire 2003-12-31: 32-holding HR + 1-holding 'RESTATEMENT')."""
+    conn = _db(tmp_path)
+    orig = _filing(conn, "1", "2003-12-31", "2004-02-17", "a1", n_holdings=32)
+    conf = _filing(conn, "1", "2003-12-31", "2004-08-25", "a2",
+                   rtype="13F-HR/A", atype="RESTATEMENT", n_holdings=1)
+    database.rebuild_effective_filings(conn)
+    assert sorted(adapter.effective_filing_ids(conn, "1", "2003-12-31")) == sorted([orig, conf])
+
+
 def test_original_filed_date_ignores_late_amendment(tmp_path):
     conn = _db(tmp_path)
     _filing(conn, "1", "2008-12-31", "2009-02-13", "a1", n_holdings=5)
