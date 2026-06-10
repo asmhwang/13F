@@ -10,7 +10,7 @@ import statistics
 from datetime import date
 from pathlib import Path
 
-from pipeline.database import DB_PATH, get_connection
+from pipeline.database import DB_PATH, ensure_effective_filings, get_connection
 from pipeline.prices import _plus_three_years
 from pipeline.scoring import adapter
 
@@ -27,6 +27,11 @@ def _equity_filter() -> str:
     return "(h.put_call IS NULL OR h.put_call = '') AND h.value_thousands > 0"
 
 
+def _ph(ids: list[int]) -> str:
+    """SQL placeholder list for an IN (...) clause."""
+    return ",".join("?" * len(ids))
+
+
 def weed_funds(conn: sqlite3.Connection) -> None:
     """Stage 1 — populate fund_eligibility for every filer."""
     cq = adapter.current_quarter_date(conn)
@@ -38,12 +43,19 @@ def weed_funds(conn: sqlite3.Connection) -> None:
             "FROM filings WHERE cik = ?", (cik,)).fetchone()
         first_q, last_q = span[0], span[1]
         npos = maxval = None
-        lf = adapter.latest_filing_id(conn, cik, cq) if cq else None
-        if lf is not None:
+        ids = adapter.effective_filing_ids(conn, cik, cq) if cq else []
+        if ids:
+            # Aggregate per CUSIP first so positions split across SOLE/SHARED
+            # rows (or across a base filing + NEW HOLDINGS amendment) are
+            # measured whole against the position-size gate.
             agg = conn.execute(
-                f"SELECT COUNT(DISTINCT h.cusip), MAX(h.value_thousands) "
-                f"FROM holdings h WHERE h.filing_id = ? AND {_equity_filter()}",
-                (lf,)).fetchone()
+                f"""
+                SELECT COUNT(*), MAX(v) FROM (
+                    SELECT SUM(h.value_thousands) AS v FROM holdings h
+                    WHERE h.filing_id IN ({_ph(ids)}) AND {_equity_filter()}
+                    GROUP BY h.cusip
+                )
+                """, ids).fetchone()
             npos, maxval = agg[0], agg[1]
 
         reason = None
@@ -80,8 +92,9 @@ def _is_resolved_ticker(ticker: str | None) -> bool:
 def compute_holding_returns(conn: sqlite3.Connection) -> None:
     """Stage 2 — per-holding 3yr forward return for eligible funds.
 
-    Drives off the latest (superseding) filing per period so that amendments
-    replace originals rather than racing on last-write-wins order.
+    Holdings come from the effective filing set (base + NEW HOLDINGS
+    amendments); the as-of date is the ORIGINAL filing's filed_date — an
+    amendment filed years later must not shift the return window.
     """
     today = date.today().isoformat()
     eligible = [r[0] for r in conn.execute(
@@ -90,31 +103,40 @@ def compute_holding_returns(conn: sqlite3.Connection) -> None:
         periods = conn.execute(
             "SELECT DISTINCT period_of_report FROM filings WHERE cik = ?", (cik,)).fetchall()
         for (period,) in periods:
-            fid = adapter.latest_filing_id(conn, cik, period)
-            if fid is None:
+            ids = adapter.effective_filing_ids(conn, cik, period)
+            if not ids:
                 continue
-            filed = conn.execute(
-                "SELECT filed_date FROM filings WHERE id = ?", (fid,)).fetchone()[0]
-            if _plus_three_years(filed) > today:
+            filed = adapter.original_filed_date(conn, cik, period)
+            if filed is None or _plus_three_years(filed) > today:
                 continue                       # quarter not yet scoreable
-            holdings = conn.execute(
+            rows = conn.execute(
                 f"""
                 SELECT h.cusip, MAX(s.ticker) AS ticker,
                        SUM(h.value_thousands) * 1000.0 AS pos_value
                 FROM holdings h
                 LEFT JOIN securities s ON s.cusip = h.cusip
-                WHERE h.filing_id = ? AND {_equity_filter()}
+                WHERE h.filing_id IN ({_ph(ids)}) AND {_equity_filter()}
                 GROUP BY h.cusip
-                """, (fid,)).fetchall()
-            for cusip, ticker, pos_value in holdings:
-                if _is_resolved_ticker(ticker):
-                    r = adapter.three_year_return(conn, ticker, filed)
+                """, ids).fetchall()
+            # Aggregate by resolved ticker so multiple CUSIPs of one issuer
+            # (share classes, re-CUSIPed lots) sum into one position instead of
+            # clobbering each other on the (fund, quarter, ticker) upsert key.
+            positions: dict[str, dict] = {}
+            for cusip, ticker, pos_value in rows:
+                resolved = _is_resolved_ticker(ticker)
+                key = ticker if resolved else cusip
+                slot = positions.setdefault(
+                    key, {"value": 0.0, "resolved": resolved})
+                slot["value"] += pos_value
+            for key, slot in positions.items():
+                if slot["resolved"]:
+                    r = adapter.three_year_return(conn, key, filed)
                     if r is None:
-                        ret, flag, key = None, "null_excluded", ticker
+                        ret, flag = None, "null_excluded"
                     else:
-                        ret, flag, key = r[0], r[1], ticker
+                        ret, flag = r[0], r[1]
                 else:
-                    ret, flag, key = None, "cusip_unresolved", cusip
+                    ret, flag = None, "cusip_unresolved"
                 conn.execute(
                     """
                     INSERT INTO holding_returns
@@ -126,15 +148,12 @@ def compute_holding_returns(conn: sqlite3.Connection) -> None:
                         three_yr_return    = excluded.three_yr_return,
                         data_quality_flag  = excluded.data_quality_flag
                     """,
-                    (cik, period, key, pos_value, ret, flag))
+                    (cik, period, key, slot["value"], ret, flag))
     conn.commit()
 
 
 def _filed_date_for(conn: sqlite3.Connection, cik: str, period: str) -> str | None:
-    lf = adapter.latest_filing_id(conn, cik, period)
-    if lf is None:
-        return None
-    return conn.execute("SELECT filed_date FROM filings WHERE id = ?", (lf,)).fetchone()[0]
+    return adapter.original_filed_date(conn, cik, period)
 
 
 def compute_qps(conn: sqlite3.Connection) -> None:
@@ -191,8 +210,14 @@ def compute_tws(conn: sqlite3.Connection) -> None:
                 "fail_reason = 'insufficient_scoreable_quarters' WHERE fund_id = ?",
                 (cik,))
             continue
-        # scores[0] is most recent -> weight 1.0; weight decays going back
-        weights = [_LAMBDA ** i for i in range(len(scores))]
+        # scores[0] is most recent -> weight 1.0; weight decays by CALENDAR
+        # quarter distance, not list index — a fund with filing gaps must not
+        # have its old quarters weighted as if they were recent.
+        def _qidx(d: str) -> int:
+            y, m, _ = (int(x) for x in d.split("-"))
+            return y * 4 + (m - 1) // 3
+        newest = _qidx(scores[0]["quarter_date"])
+        weights = [_LAMBDA ** (newest - _qidx(s["quarter_date"])) for s in scores]
         contribs = [w * s["qps_excess"] for w, s in zip(weights, scores)]
         wsum = sum(weights)
         csum = sum(contribs)
@@ -220,12 +245,12 @@ def compute_tws(conn: sqlite3.Connection) -> None:
 
 
 def _quarter_cusips(conn: sqlite3.Connection, cik: str, period: str) -> set[str]:
-    lf = adapter.latest_filing_id(conn, cik, period)
-    if lf is None:
+    ids = adapter.effective_filing_ids(conn, cik, period)
+    if not ids:
         return set()
     rows = conn.execute(
         f"SELECT DISTINCT h.cusip FROM holdings h "
-        f"WHERE h.filing_id = ? AND {_equity_filter()}", (lf,)).fetchall()
+        f"WHERE h.filing_id IN ({_ph(ids)}) AND {_equity_filter()}", ids).fetchall()
     return {r[0] for r in rows}
 
 
@@ -307,13 +332,13 @@ def _fund_aum_and_positions(conn: sqlite3.Connection, cik: str) -> tuple[float, 
     aums: list[float] = []
     counts: list[int] = []
     for period in periods:
-        lf = adapter.latest_filing_id(conn, cik, period)
-        if lf is None:
+        ids = adapter.effective_filing_ids(conn, cik, period)
+        if not ids:
             continue
         agg = conn.execute(
             f"SELECT COUNT(DISTINCT h.cusip), SUM(h.value_thousands) * 1000.0 "
-            f"FROM holdings h WHERE h.filing_id = ? AND {_equity_filter()}",
-            (lf,)).fetchone()
+            f"FROM holdings h WHERE h.filing_id IN ({_ph(ids)}) AND {_equity_filter()}",
+            ids).fetchone()
         if agg[0]:
             counts.append(agg[0])
             aums.append(agg[1] or 0.0)
@@ -339,8 +364,13 @@ def compute_composite(conn: sqlite3.Connection) -> None:
         return
     raw = {}
     for r in funds:
-        raw[r["fund_id"]] = (r["tws"] * r["turnover_multiplier"] * 0.70
-                             + r["consistency_score"] * 0.30)
+        # The turnover multiplier (0.5-1.0) is a penalty. Applied as a plain
+        # product it would REWARD high-turnover funds with negative TWS
+        # (shrinking the loss), so subtract the penalty from |tws| instead:
+        # tws*mult when tws >= 0, tws*(2-mult) when tws < 0.
+        tws, mult = r["tws"], r["turnover_multiplier"]
+        penalized = tws - (1 - mult) * abs(tws)
+        raw[r["fund_id"]] = penalized * 0.70 + r["consistency_score"] * 0.30
     lo, hi = min(raw.values()), max(raw.values())
     span = hi - lo
 
@@ -380,6 +410,7 @@ def run_fund_pipeline(db_path: Path = DB_PATH) -> dict:
     conn = get_connection(db_path)
     try:
         adapter.init_schema(conn, db_path)
+        ensure_effective_filings(conn)
         # Truncate all result tables so each run is a clean rebuild; this ensures
         # funds that become ineligible between runs are not left as stale rows.
         for t in ("fund_eligibility", "holding_returns", "fund_quarterly_scores",

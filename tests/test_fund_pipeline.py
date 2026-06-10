@@ -169,13 +169,17 @@ def test_compute_qps_value_weighted_excess(tmp_path):
     assert row["positions_excluded_null"] == 1
 
 
+_QUARTER_ENDS = ["03-31", "06-30", "09-30", "12-31"]
+
+
 def _seed_scores(conn, cik, excesses, start_year=2016):
-    """Seed fund_quarterly_scores: excesses[0] is the OLDEST quarter."""
+    """Seed fund_quarterly_scores with CONSECUTIVE quarters; excesses[0] is the
+    OLDEST quarter (λ-decay weights by calendar quarter distance)."""
     conn.execute(f"INSERT INTO filers(cik,name) VALUES ('{cik}','{cik}')")
     conn.execute(f"INSERT INTO fund_eligibility(fund_id,eligible,fail_reason) "
                  f"VALUES ('{cik}',1,NULL)")
     for i, ex in enumerate(excesses):
-        q = f"{start_year + i}-03-31"
+        q = f"{start_year + i // 4}-{_QUARTER_ENDS[i % 4]}"
         conn.execute(
             "INSERT INTO fund_quarterly_scores(fund_id,quarter_date,qps_raw,"
             "qps_excess,benchmark_return,positions_included,positions_excluded_null)"
